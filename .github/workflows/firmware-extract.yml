@@ -22,7 +22,7 @@ jobs:
       - name: Install tools
         run: |
           sudo apt-get update
-          sudo apt-get install -y curl tar gzip android-sdk-libsparse-utils dosfstools file
+          sudo apt-get install -y curl tar gzip android-sdk-libsparse-utils dosfstools file tree
 
       - name: Download ROM
         run: |
@@ -30,117 +30,44 @@ jobs:
           curl -L --fail --retry 3 --retry-delay 10 -o /tmp/xun.tgz "${{ inputs.rom_url }}"
           ls -lh /tmp/xun.tgz
 
-      - name: Unpack ROM
+      - name: Unpack and inspect ROM layout
         run: |
           mkdir -p /tmp/rom
           tar -xzf /tmp/xun.tgz -C /tmp/rom
-          echo "=== Top level of ROM ==="
-          find /tmp/rom -maxdepth 3 -type d | head -40
-          find /tmp/rom -type d -name images | head -1 | tee /tmp/imgdir
-          echo "Images dir: $(cat /tmp/imgdir)"
-          echo "=== Contents of images/ ==="
-          ls -lh "$(cat /tmp/imgdir)" || true
 
-      - name: Pull firmware files
+          echo "=== Full tree (depth 4) ==="
+          find /tmp/rom -maxdepth 4 -type d | sort
+
+          echo ""
+          echo "=== Looking for images directory ==="
+          find /tmp/rom -type d -name images | tee /tmp/imgdir
+
+          IMGDIR=$(cat /tmp/imgdir | head -1)
+          echo "Using: $IMGDIR"
+
+          echo ""
+          echo "=== ALL files in images/ ==="
+          ls -lh "$IMGDIR"
+
+          echo ""
+          echo "=== Files that look like modem / bluetooth / non-hlos / firmware ==="
+          find "$IMGDIR" -iname "*modem*" -o -iname "*bluetooth*" -o -iname "*non-hlos*" -o -iname "*dsp*" -o -iname "*adsp*" -o -iname "*wlan*" -o -iname "*bt*" | sort
+
+          echo ""
+          echo "=== File types of interesting candidates ==="
+          find "$IMGDIR" -iname "*modem*" -o -iname "*bluetooth*" -o -iname "*non-hlos*" | while read f; do
+            echo "--- $f ---"
+            file "$f"
+            ls -lh "$f"
+          done
+
+      - name: Keep artifact of the file list
         run: |
-          set -x
-          IMGDIR=$(cat /tmp/imgdir)
-          mkdir -p /tmp/mnt/modem /tmp/mnt/bt
-          mkdir -p build/firmware/qcom/sm6225/xiaomi/xun
-          mkdir -p build/firmware/qca
+          find /tmp/rom -type f | sort > /tmp/rom-filelist.txt
+          ls -lh /tmp/rom-filelist.txt
 
-          echo "=== Looking for modem.img ==="
-          find "$IMGDIR" -iname "*modem*" || true
-
-          MODEM=$(find "$IMGDIR" -iname "modem.img" | head -1 || true)
-          echo "MODEM=$MODEM"
-
-          if [ -n "$MODEM" ]; then
-            file "$MODEM"
-            if file "$MODEM" | grep -qi sparse; then
-              echo "Converting sparse modem..."
-              simg2img "$MODEM" /tmp/modem.raw
-            else
-              cp "$MODEM" /tmp/modem.raw
-            fi
-            ls -lh /tmp/modem.raw
-            sudo mount -o loop,ro /tmp/modem.raw /tmp/mnt/modem && echo "modem mounted" || echo "modem mount FAILED"
-            echo "=== modem mount contents ==="
-            ls -la /tmp/mnt/modem/ || true
-            ls -la /tmp/mnt/modem/image/ 2>/dev/null || true
-          else
-            echo "ERROR: modem.img not found"
-          fi
-
-          echo "=== Looking for bluetooth.img ==="
-          find "$IMGDIR" -iname "*bluetooth*" || true
-
-          BT=$(find "$IMGDIR" -iname "bluetooth.img" | head -1 || true)
-          echo "BT=$BT"
-
-          if [ -n "$BT" ]; then
-            file "$BT"
-            if file "$BT" | grep -qi sparse; then
-              echo "Converting sparse bluetooth..."
-              simg2img "$BT" /tmp/bt.raw
-            else
-              cp "$BT" /tmp/bt.raw
-            fi
-            ls -lh /tmp/bt.raw
-            sudo mount -o loop,ro /tmp/bt.raw /tmp/mnt/bt && echo "bt mounted" || echo "bt mount FAILED"
-            echo "=== bt mount contents ==="
-            ls -la /tmp/mnt/bt/ || true
-            ls -la /tmp/mnt/bt/image/ 2>/dev/null || true
-          else
-            echo "ERROR: bluetooth.img not found"
-          fi
-
-          echo "=== Copying files ==="
-          if [ -d /tmp/mnt/modem/image ]; then
-            cp -v /tmp/mnt/modem/image/adsp*        build/firmware/qcom/sm6225/xiaomi/xun/ 2>/dev/null || true
-            cp -v /tmp/mnt/modem/image/modem*       build/firmware/qcom/sm6225/xiaomi/xun/ 2>/dev/null || true
-            cp -v /tmp/mnt/modem/image/wlanmdsp.mbn build/firmware/qcom/sm6225/xiaomi/xun/ 2>/dev/null || true
-            cp -v /tmp/mnt/modem/image/bdwlan*      build/firmware/qcom/sm6225/xiaomi/xun/ 2>/dev/null || true
-            cp -v /tmp/mnt/modem/image/bd84*        build/firmware/qcom/sm6225/xiaomi/xun/ 2>/dev/null || true
-          fi
-
-          if [ -d /tmp/mnt/bt/image ]; then
-            cp -v /tmp/mnt/bt/image/cmbtfw13.tlv build/firmware/qca/crbtfw13.tlv 2>/dev/null || true
-            cp -v /tmp/mnt/bt/image/cmnv13.bin   build/firmware/qca/crnv13.bin 2>/dev/null || true
-          fi
-
-          echo "=== Final collected files ==="
-          find build/firmware -type f | sort
-          du -sh build/firmware || true
-
-          # Fail the job if nothing useful was extracted
-          COUNT=$(find build/firmware -type f | wc -l)
-          echo "File count: $COUNT"
-          if [ "$COUNT" -lt 3 ]; then
-            echo "ERROR: Too few firmware files extracted. Check the logs above."
-            exit 1
-          fi
-
-      - name: Commit and push
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-
-          git status
-          git add -f build/firmware/
-          git status
-
-          if git diff --cached --quiet; then
-            echo "ERROR: git add produced no changes"
-            exit 1
-          else
-            git commit -m "firmware: add extracted blobs for xiaomi-xun"
-            git push
-            echo "Successfully pushed firmware"
-          fi
-
-      - name: Upload artifact
+      - name: Upload file list artifact
         uses: actions/upload-artifact@v4
         with:
-          name: firmware-xiaomi-xun
-          path: build/firmware/
+          name: rom-layout
+          path: /tmp/rom-filelist.txt
