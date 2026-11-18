@@ -1,10 +1,10 @@
-name: postmarketOS Setup (xun)
+name: postmarketOS Setup + Firmware Extract (xun)
 
 on:
   workflow_dispatch:
     inputs:
       ui:
-        description: "UI to select during pmbootstrap init (gnome is the one used by this port)"
+        description: "UI for pmbootstrap init"
         required: true
         default: "gnome"
         type: choice
@@ -16,196 +16,141 @@ on:
           - xfce4
           - console
           - none
-      firmware_url:
-        description: "Optional URL to a pre-extracted firmware-xiaomi-xun.tar.gz (or empty)"
+      rom_url:
+        description: "Direct URL to Xiaomi fastboot .tgz (leave default for latest Global)"
         required: false
-        default: ""
+        default: "https://bkt-sgp-miui-ota-update-alisgp.oss-ap-southeast-1.aliyuncs.com/OS2.0.209.0.VMUMIXM/xun_global_images_OS2.0.209.0.VMUMIXM_20260622.0000.00_15.0_global_0dee6f46cf.tgz"
 
 jobs:
-  setup:
+  extract-firmware:
     runs-on: ubuntu-latest
-    # pmbootstrap needs root for some chroot operations
-    # and we deliberately install it system-wide.
+    timeout-minutes: 360   # large download needs time
 
     steps:
-      - name: Checkout this repository
+      - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Install system dependencies
+      - name: Install tools
         run: |
           set -eux
           sudo apt-get update
-          sudo apt-get install -y \
-            git python3 python3-pip python3-setuptools python3-wheel \
-            curl wget rsync sudo \
-            build-essential libssl-dev libffi-dev \
-            android-tools-adb android-tools-fastboot \
-            e2fsprogs
+          sudo apt-get install -y curl wget tar gzip android-sdk-libsparse-utils \
+            mtools dosfstools p7zip-full
 
-      - name: Install pmbootstrap (as root)
+      - name: Download Xiaomi fastboot ROM
         run: |
           set -eux
-          # Official recommended way + system-wide so "pmbootstrap" is in PATH for root
-          sudo pip3 install --break-system-packages pmbootstrap
-          pmbootstrap --version || true
-          which pmbootstrap
+          echo "Downloading ROM (this will take a while)..."
+          curl -L --fail --retry 3 --retry-delay 10 \
+            -o /tmp/xun-fastboot.tgz \
+            "${{ inputs.rom_url }}"
+          ls -lh /tmp/xun-fastboot.tgz
 
-      - name: Create build/firmware structure
+      - name: Extract fastboot package
         run: |
           set -eux
-          mkdir -p build/firmware/qcom/sm6225/xiaomi/xun
-          mkdir -p build/firmware/qcom/sm4250
-          mkdir -p build/firmware/qcom
-          mkdir -p build/firmware/ath10k/WCN3990/hw1.0
-          mkdir -p build/firmware/qca
+          mkdir -p /tmp/rom
+          tar -xzf /tmp/xun-fastboot.tgz -C /tmp/rom
+          # Find the images directory (structure can vary slightly)
+          find /tmp/rom -type d -name "images" | head -1 > /tmp/images_dir.txt
+          IMAGES_DIR=$(cat /tmp/images_dir.txt)
+          echo "Images dir: $IMAGES_DIR"
+          ls -lh "$IMAGES_DIR" | head -30
 
-          cat > build/firmware/README.md << 'EOF'
-# Firmware for xiaomi-xun (Redmi Pad SE)
-
-This directory is **required** by the port and by the `firmware-xiaomi-xun`
-package in pmaports.
-
-## Why it is empty in git
-
-The blobs are proprietary (Qualcomm ADSP/modem/WLAN, Focaltech touch,
-QCA Bluetooth, Adreno zap, etc.). They must be extracted from a real
-device or from an official Xiaomi fastboot ROM.
-
-See:
-- docs/BUILD.md  → section "2. Firmware"
-- docs/DOWNLOADS.md  → Firmware table
-
-## Required layout (what the APKBUILD and build scripts expect)
-
-```
-build/firmware/
-├─ qcom/sm6225/xiaomi/xun/
-│   ├─ adsp.*
-│   ├─ modem.*
-│   ├─ wlanmdsp.mbn
-│   ├─ bdwlan*
-│   └─ bd84*
-├─ qcom/sm4250/SM6225-Xun-tplg.bin   # built by build/mktplg.sh
-├─ qcom/a610_zap.*
-├─ qcom/a630_sqe.fw
-├─ focaltech_ts_fw_*.bin
-├─ ath10k/WCN3990/hw1.0/
-│   ├─ wlanmdsp.mbn
-│   ├─ board-2.bin
-│   └─ firmware-5.bin
-└─ qca/
-    ├─ crbtfw13.tlv
-    └─ crnv13.bin
-```
-
-## How to populate
-
-1. On a running stock Android install (or from a full partition dump):
-   - Mount `modem_a` (vfat) and copy the ADSP / modem / WLAN files.
-   - Extract touch firmware from the `vendor` partition.
-   - Extract Bluetooth firmware from `bluetooth_a` and rename to the `cr*` names.
-2. Or unpack an official Xiaomi fastboot `.tgz`, then extract the relevant
-   partition images and pull the same files.
-3. Once the files are present, run:
-   ```sh
-   ./scripts/sync-pmaports.sh
-   ```
-   to regenerate the firmware tarball used by the APKBUILD.
-
-The CI workflow can also accept a pre-made `firmware-xiaomi-xun.tar.gz` via
-the `firmware_url` input.
-EOF
-
-          echo "Created build/firmware tree + README"
-
-      - name: Optionally download pre-extracted firmware
-        if: ${{ inputs.firmware_url != '' }}
+      - name: Locate modem and bluetooth images
         run: |
           set -eux
-          curl -L --fail -o /tmp/firmware-xiaomi-xun.tar.gz "${{ inputs.firmware_url }}"
-          tar -tzf /tmp/firmware-xiaomi-xun.tar.gz | head
-          # Extract into the expected location (adjust if your tarball layout differs)
-          tar -xzf /tmp/firmware-xiaomi-xun.tar.gz -C build/firmware --strip-components=1 || \
-          tar -xzf /tmp/firmware-xiaomi-xun.tar.gz -C build/
-          echo "Firmware archive extracted"
-          find build/firmware -type f | head -30
+          IMAGES_DIR=$(cat /tmp/images_dir.txt)
+          find "$IMAGES_DIR" -iname "*modem*" -o -iname "*bluetooth*" | tee /tmp/fw_images.txt
+          ls -lh $(cat /tmp/fw_images.txt) || true
 
-      - name: Prepare pmaports overlay
+      - name: Convert sparse images if needed and extract firmware
         run: |
           set -eux
-          # Clone official pmaports (edge channel is what this port targets)
-          git clone --depth=1 https://gitlab.postmarketos.org/postmarketOS/pmaports.git /tmp/pmaports
+          IMAGES_DIR=$(cat /tmp/images_dir.txt)
+          mkdir -p /tmp/extract/{modem,bt,firmware}
 
-          # Overlay the three packages from this repository
-          mkdir -p /tmp/pmaports/device/testing
-          rsync -a pmaports/device/testing/device-xiaomi-xun/ \
-                   /tmp/pmaports/device/testing/device-xiaomi-xun/
-          rsync -a pmaports/device/testing/linux-postmarketos-qcom-sm6225/ \
-                   /tmp/pmaports/device/testing/linux-postmarketos-qcom-sm6225/
-          rsync -a pmaports/device/testing/firmware-xiaomi-xun/ \
-                   /tmp/pmaports/device/testing/firmware-xiaomi-xun/
+          # Helper: convert sparse -> raw if necessary
+          convert_if_sparse() {
+            local src="$1"
+            local dst="$2"
+            if file "$src" | grep -q sparse; then
+              echo "Converting sparse $src ..."
+              simg2img "$src" "$dst"
+            else
+              cp "$src" "$dst"
+            fi
+          }
 
-          echo "Overlapped packages:"
-          ls -la /tmp/pmaports/device/testing/ | grep -E 'xiaomi-xun|sm6225|firmware'
+          # Modem
+          MODEM_IMG=$(find "$IMAGES_DIR" -iname "modem.img" | head -1 || true)
+          if [ -n "$MODEM_IMG" ]; then
+            convert_if_sparse "$MODEM_IMG" /tmp/extract/modem.raw
+            mkdir -p /tmp/extract/modem_mnt
+            sudo mount -o loop,ro /tmp/extract/modem.raw /tmp/extract/modem_mnt || true
+            ls /tmp/extract/modem_mnt/ || true
+            ls /tmp/extract/modem_mnt/image/ 2>/dev/null || true
+          fi
 
-      - name: Non-interactive pmbootstrap init
+          # Bluetooth
+          BT_IMG=$(find "$IMAGES_DIR" -iname "bluetooth.img" | head -1 || true)
+          if [ -n "$BT_IMG" ]; then
+            convert_if_sparse "$BT_IMG" /tmp/extract/bt.raw
+            mkdir -p /tmp/extract/bt_mnt
+            sudo mount -o loop,ro /tmp/extract/bt.raw /tmp/extract/bt_mnt || true
+            ls /tmp/extract/bt_mnt/ || true
+            ls /tmp/extract/bt_mnt/image/ 2>/dev/null || true
+          fi
+
+          # Collect files into the expected structure
+          FW=/tmp/extract/firmware
+          mkdir -p $FW/{qcom/sm6225/xiaomi/xun,qcom,qca,ath10k/WCN3990/hw1.0}
+
+          # From modem
+          if [ -d /tmp/extract/modem_mnt/image ]; then
+            cp -v /tmp/extract/modem_mnt/image/adsp*          $FW/qcom/sm6225/xiaomi/xun/ 2>/dev/null || true
+            cp -v /tmp/extract/modem_mnt/image/modem*         $FW/qcom/sm6225/xiaomi/xun/ 2>/dev/null || true
+            cp -v /tmp/extract/modem_mnt/image/wlanmdsp.mbn   $FW/qcom/sm6225/xiaomi/xun/ 2>/dev/null || true
+            cp -v /tmp/extract/modem_mnt/image/bdwlan*        $FW/qcom/sm6225/xiaomi/xun/ 2>/dev/null || true
+            cp -v /tmp/extract/modem_mnt/image/bd84*          $FW/qcom/sm6225/xiaomi/xun/ 2>/dev/null || true
+          fi
+
+          # From bluetooth
+          if [ -d /tmp/extract/bt_mnt/image ]; then
+            cp -v /tmp/extract/bt_mnt/image/cmbtfw13.tlv $FW/qca/crbtfw13.tlv 2>/dev/null || true
+            cp -v /tmp/extract/bt_mnt/image/cmnv13.bin   $FW/qca/crnv13.bin   2>/dev/null || true
+          fi
+
+          echo "=== Collected firmware files ==="
+          find $FW -type f | sort
+          du -sh $FW
+
+      - name: Create firmware tarball
         run: |
           set -eux
-          # Create a minimal non-interactive config
-          # (pmbootstrap init is interactive by default; we drive it with answers)
-          export PMB_WORK=/tmp/pmbootstrap-work
-          mkdir -p "$PMB_WORK"
+          cd /tmp/extract
+          tar -czf firmware-xiaomi-xun.tar.gz -C firmware .
+          ls -lh firmware-xiaomi-xun.tar.gz
+          # Also put a copy into the repo tree for convenience
+          mkdir -p $GITHUB_WORKSPACE/build/firmware
+          tar -xzf firmware-xiaomi-xun.tar.gz -C $GITHUB_WORKSPACE/build/firmware
 
-          # First run creates the config skeleton
-          pmbootstrap --work "$PMB_WORK" config aports /tmp/pmaports || true
+      - name: Upload firmware artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: firmware-xiaomi-xun
+          path: /tmp/extract/firmware-xiaomi-xun.tar.gz
+          retention-days: 30
 
-          # Force the device + UI we care about
-          # (these are the keys pmbootstrap stores)
-          pmbootstrap --work "$PMB_WORK" config device xiaomi-xun
-          pmbootstrap --work "$PMB_WORK" config ui "${{ inputs.ui }}"
-          pmbootstrap --work "$PMB_WORK" config user xun
-          pmbootstrap --work "$PMB_WORK" config hostname xun
-          pmbootstrap --work "$PMB_WORK" config timezone UTC
-          pmbootstrap --work "$PMB_WORK" config locale en_US.UTF-8
-
-          echo "=== pmbootstrap config ==="
-          pmbootstrap --work "$PMB_WORK" config
-
-      - name: List available UIs / GUIs
+      - name: Summary
         run: |
-          set -eux
           echo "============================================================"
-          echo "Available postmarketOS UIs (from official pmaports main/)"
+          echo "Firmware extraction finished"
           echo "============================================================"
-          ls /tmp/pmaports/main/ | grep '^postmarketos-ui-' | sed 's/postmarketos-ui-//' | sort
-
+          echo "Artifact: firmware-xiaomi-xun.tar.gz"
+          echo "You can download it from the Actions run page."
           echo ""
-          echo "Common / recommended ones for tablets:"
-          echo "  - gnome          (what this port is built and tested with)"
-          echo "  - phosh          (mobile-friendly GNOME Shell variant)"
-          echo "  - plasma-mobile  (KDE)"
-          echo "  - sxmo-de-sway   (simple mobile)"
-          echo "  - xfce4"
-          echo "  - console / none"
-
-          echo ""
-          echo "Current selection for this run: ${{ inputs.ui }}"
-
-      - name: Status summary
-        run: |
-          set -eux
-          echo "============================================================"
-          echo "Setup complete"
-          echo "============================================================"
-          echo "build/firmware tree: present (see build/firmware/README.md)"
-          echo "pmbootstrap: installed"
-          echo "pmaports: overlaid with xiaomi-xun packages"
-          echo "Device: xiaomi-xun"
-          echo "UI:     ${{ inputs.ui }}"
-          echo ""
-          echo "Next manual steps on a real host:"
-          echo "  1. Populate build/firmware (docs/BUILD.md)"
-          echo "  2. ./scripts/sync-pmaports.sh"
-          echo "  3. pmbootstrap init   # (or use the config already written)"
-          echo "  4. pmbootstrap install"
-          echo "  5. Build the v4 boot image with ./build/build-xun.sh"
+          echo "To use it locally:"
+          echo "  mkdir -p build/firmware"
+          echo "  tar -xzf firmware-xiaomi-xun.tar.gz -C build/firmware"
+          echo "  ./scripts/sync-pmaports.sh"
