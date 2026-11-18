@@ -17,18 +17,23 @@ on:
           - console
           - none
       rom_url:
-        description: "Direct URL to Xiaomi fastboot .tgz (leave default for latest Global)"
+        description: "Direct URL to Xiaomi fastboot .tgz"
         required: false
         default: "https://bkt-sgp-miui-ota-update-alisgp.oss-ap-southeast-1.aliyuncs.com/OS2.0.209.0.VMUMIXM/xun_global_images_OS2.0.209.0.VMUMIXM_20260622.0000.00_15.0_global_0dee6f46cf.tgz"
 
+permissions:
+  contents: write   # needed to push the extracted firmware back
+
 jobs:
-  extract-firmware:
+  extract-and-commit-firmware:
     runs-on: ubuntu-latest
-    timeout-minutes: 360   # large download needs time
+    timeout-minutes: 360
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Install tools
         run: |
@@ -40,8 +45,8 @@ jobs:
       - name: Download Xiaomi fastboot ROM
         run: |
           set -eux
-          echo "Downloading ROM (this will take a while)..."
-          curl -L --fail --retry 3 --retry-delay 10 \
+          echo "Downloading ROM (this takes a while)..."
+          curl -L --fail --retry 3 --retry-delay 15 \
             -o /tmp/xun-fastboot.tgz \
             "${{ inputs.rom_url }}"
           ls -lh /tmp/xun-fastboot.tgz
@@ -51,31 +56,21 @@ jobs:
           set -eux
           mkdir -p /tmp/rom
           tar -xzf /tmp/xun-fastboot.tgz -C /tmp/rom
-          # Find the images directory (structure can vary slightly)
           find /tmp/rom -type d -name "images" | head -1 > /tmp/images_dir.txt
           IMAGES_DIR=$(cat /tmp/images_dir.txt)
-          echo "Images dir: $IMAGES_DIR"
-          ls -lh "$IMAGES_DIR" | head -30
+          echo "Images directory: $IMAGES_DIR"
+          ls -lh "$IMAGES_DIR" | head -40
 
-      - name: Locate modem and bluetooth images
+      - name: Extract modem + bluetooth firmware
         run: |
           set -eux
           IMAGES_DIR=$(cat /tmp/images_dir.txt)
-          find "$IMAGES_DIR" -iname "*modem*" -o -iname "*bluetooth*" | tee /tmp/fw_images.txt
-          ls -lh $(cat /tmp/fw_images.txt) || true
+          mkdir -p /tmp/extract/{modem_mnt,bt_mnt}
 
-      - name: Convert sparse images if needed and extract firmware
-        run: |
-          set -eux
-          IMAGES_DIR=$(cat /tmp/images_dir.txt)
-          mkdir -p /tmp/extract/{modem,bt,firmware}
-
-          # Helper: convert sparse -> raw if necessary
           convert_if_sparse() {
-            local src="$1"
-            local dst="$2"
-            if file "$src" | grep -q sparse; then
-              echo "Converting sparse $src ..."
+            local src="$1" dst="$2"
+            if file "$src" | grep -qi sparse; then
+              echo "Converting sparse image $src"
               simg2img "$src" "$dst"
             else
               cp "$src" "$dst"
@@ -86,27 +81,32 @@ jobs:
           MODEM_IMG=$(find "$IMAGES_DIR" -iname "modem.img" | head -1 || true)
           if [ -n "$MODEM_IMG" ]; then
             convert_if_sparse "$MODEM_IMG" /tmp/extract/modem.raw
-            mkdir -p /tmp/extract/modem_mnt
-            sudo mount -o loop,ro /tmp/extract/modem.raw /tmp/extract/modem_mnt || true
+            sudo mount -o loop,ro /tmp/extract/modem.raw /tmp/extract/modem_mnt || \
+              sudo mount -t vfat -o loop,ro /tmp/extract/modem.raw /tmp/extract/modem_mnt || true
+            echo "=== modem contents ==="
             ls /tmp/extract/modem_mnt/ || true
             ls /tmp/extract/modem_mnt/image/ 2>/dev/null || true
+          else
+            echo "WARNING: modem.img not found"
           fi
 
           # Bluetooth
           BT_IMG=$(find "$IMAGES_DIR" -iname "bluetooth.img" | head -1 || true)
           if [ -n "$BT_IMG" ]; then
             convert_if_sparse "$BT_IMG" /tmp/extract/bt.raw
-            mkdir -p /tmp/extract/bt_mnt
-            sudo mount -o loop,ro /tmp/extract/bt.raw /tmp/extract/bt_mnt || true
+            sudo mount -o loop,ro /tmp/extract/bt.raw /tmp/extract/bt_mnt || \
+              sudo mount -t vfat -o loop,ro /tmp/extract/bt.raw /tmp/extract/bt_mnt || true
+            echo "=== bluetooth contents ==="
             ls /tmp/extract/bt_mnt/ || true
             ls /tmp/extract/bt_mnt/image/ 2>/dev/null || true
+          else
+            echo "WARNING: bluetooth.img not found"
           fi
 
-          # Collect files into the expected structure
-          FW=/tmp/extract/firmware
+          # Build the final structure
+          FW=build/firmware
           mkdir -p $FW/{qcom/sm6225/xiaomi/xun,qcom,qca,ath10k/WCN3990/hw1.0}
 
-          # From modem
           if [ -d /tmp/extract/modem_mnt/image ]; then
             cp -v /tmp/extract/modem_mnt/image/adsp*          $FW/qcom/sm6225/xiaomi/xun/ 2>/dev/null || true
             cp -v /tmp/extract/modem_mnt/image/modem*         $FW/qcom/sm6225/xiaomi/xun/ 2>/dev/null || true
@@ -115,42 +115,35 @@ jobs:
             cp -v /tmp/extract/modem_mnt/image/bd84*          $FW/qcom/sm6225/xiaomi/xun/ 2>/dev/null || true
           fi
 
-          # From bluetooth
           if [ -d /tmp/extract/bt_mnt/image ]; then
             cp -v /tmp/extract/bt_mnt/image/cmbtfw13.tlv $FW/qca/crbtfw13.tlv 2>/dev/null || true
             cp -v /tmp/extract/bt_mnt/image/cmnv13.bin   $FW/qca/crnv13.bin   2>/dev/null || true
           fi
 
-          echo "=== Collected firmware files ==="
+          echo "=== Final firmware files ==="
           find $FW -type f | sort
           du -sh $FW
 
-      - name: Create firmware tarball
+      - name: Commit and push firmware
         run: |
           set -eux
-          cd /tmp/extract
-          tar -czf firmware-xiaomi-xun.tar.gz -C firmware .
-          ls -lh firmware-xiaomi-xun.tar.gz
-          # Also put a copy into the repo tree for convenience
-          mkdir -p $GITHUB_WORKSPACE/build/firmware
-          tar -xzf firmware-xiaomi-xun.tar.gz -C $GITHUB_WORKSPACE/build/firmware
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
 
-      - name: Upload firmware artifact
+          git add build/firmware/
+          if git diff --cached --quiet; then
+            echo "No firmware files to commit"
+          else
+            git commit -m "firmware: add extracted blobs for xiaomi-xun
+
+Extracted from official Xiaomi fastboot ROM via CI"
+            git push
+            echo "Firmware committed and pushed"
+          fi
+
+      - name: Upload artifact as backup
         uses: actions/upload-artifact@v4
         with:
           name: firmware-xiaomi-xun
-          path: /tmp/extract/firmware-xiaomi-xun.tar.gz
+          path: build/firmware/
           retention-days: 30
-
-      - name: Summary
-        run: |
-          echo "============================================================"
-          echo "Firmware extraction finished"
-          echo "============================================================"
-          echo "Artifact: firmware-xiaomi-xun.tar.gz"
-          echo "You can download it from the Actions run page."
-          echo ""
-          echo "To use it locally:"
-          echo "  mkdir -p build/firmware"
-          echo "  tar -xzf firmware-xiaomi-xun.tar.gz -C build/firmware"
-          echo "  ./scripts/sync-pmaports.sh"
