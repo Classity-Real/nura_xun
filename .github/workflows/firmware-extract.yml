@@ -22,7 +22,7 @@ jobs:
       - name: Install tools
         run: |
           sudo apt-get update
-          sudo apt-get install -y curl tar gzip android-sdk-libsparse-utils dosfstools file tree
+          sudo apt-get install -y curl tar gzip android-sdk-libsparse-utils dosfstools file
 
       - name: Download ROM
         run: |
@@ -30,44 +30,120 @@ jobs:
           curl -L --fail --retry 3 --retry-delay 10 -o /tmp/xun.tgz "${{ inputs.rom_url }}"
           ls -lh /tmp/xun.tgz
 
-      - name: Unpack and inspect ROM layout
+      - name: Unpack ROM
         run: |
           mkdir -p /tmp/rom
           tar -xzf /tmp/xun.tgz -C /tmp/rom
+          find /tmp/rom -type d -name images | head -1 | tee /tmp/imgdir
+          ls -lh "$(cat /tmp/imgdir)"
 
-          echo "=== Full tree (depth 4) ==="
-          find /tmp/rom -maxdepth 4 -type d | sort
-
-          echo ""
-          echo "=== Looking for images directory ==="
-          find /tmp/rom -type d -name images | tee /tmp/imgdir
-
-          IMGDIR=$(cat /tmp/imgdir | head -1)
-          echo "Using: $IMGDIR"
-
-          echo ""
-          echo "=== ALL files in images/ ==="
-          ls -lh "$IMGDIR"
-
-          echo ""
-          echo "=== Files that look like modem / bluetooth / non-hlos / firmware ==="
-          find "$IMGDIR" -iname "*modem*" -o -iname "*bluetooth*" -o -iname "*non-hlos*" -o -iname "*dsp*" -o -iname "*adsp*" -o -iname "*wlan*" -o -iname "*bt*" | sort
-
-          echo ""
-          echo "=== File types of interesting candidates ==="
-          find "$IMGDIR" -iname "*modem*" -o -iname "*bluetooth*" -o -iname "*non-hlos*" | while read f; do
-            echo "--- $f ---"
-            file "$f"
-            ls -lh "$f"
-          done
-
-      - name: Keep artifact of the file list
+      - name: Extract firmware from NON-HLOS.bin and BTFM.bin
         run: |
-          find /tmp/rom -type f | sort > /tmp/rom-filelist.txt
-          ls -lh /tmp/rom-filelist.txt
+          set -eux
+          IMGDIR=$(cat /tmp/imgdir)
 
-      - name: Upload file list artifact
+          mkdir -p /tmp/mnt/nonhlos /tmp/mnt/btfm
+          mkdir -p build/firmware/qcom/sm6225/xiaomi/xun
+          mkdir -p build/firmware/qca
+
+          # NON-HLOS.bin = modem + ADSP + WLAN
+          NONHLOS="$IMGDIR/NON-HLOS.bin"
+          ls -lh "$NONHLOS"
+          file "$NONHLOS"
+
+          # Try mounting as VFAT (most common)
+          if sudo mount -o loop,ro "$NONHLOS" /tmp/mnt/nonhlos 2>/dev/null; then
+            echo "Mounted NON-HLOS.bin as VFAT"
+          else
+            # Sometimes it is sparse
+            if file "$NONHLOS" | grep -qi sparse; then
+              simg2img "$NONHLOS" /tmp/nonhlos.raw
+              sudo mount -o loop,ro /tmp/nonhlos.raw /tmp/mnt/nonhlos
+            else
+              # Last resort: try as raw
+              sudo mount -t vfat -o loop,ro "$NONHLOS" /tmp/mnt/nonhlos || true
+            fi
+          fi
+
+          echo "=== NON-HLOS contents ==="
+          ls -la /tmp/mnt/nonhlos/ || true
+          ls -la /tmp/mnt/nonhlos/image/ 2>/dev/null || true
+
+          # BTFM.bin = Bluetooth
+          BTFM="$IMGDIR/BTFM.bin"
+          ls -lh "$BTFM"
+          file "$BTFM"
+
+          if sudo mount -o loop,ro "$BTFM" /tmp/mnt/btfm 2>/dev/null; then
+            echo "Mounted BTFM.bin as VFAT"
+          else
+            if file "$BTFM" | grep -qi sparse; then
+              simg2img "$BTFM" /tmp/btfm.raw
+              sudo mount -o loop,ro /tmp/btfm.raw /tmp/mnt/btfm
+            else
+              sudo mount -t vfat -o loop,ro "$BTFM" /tmp/mnt/btfm || true
+            fi
+          fi
+
+          echo "=== BTFM contents ==="
+          ls -la /tmp/mnt/btfm/ || true
+          ls -la /tmp/mnt/btfm/image/ 2>/dev/null || true
+
+          # Copy modem / ADSP / WLAN
+          if [ -d /tmp/mnt/nonhlos/image ]; then
+            cp -v /tmp/mnt/nonhlos/image/adsp*          build/firmware/qcom/sm6225/xiaomi/xun/ 2>/dev/null || true
+            cp -v /tmp/mnt/nonhlos/image/modem*         build/firmware/qcom/sm6225/xiaomi/xun/ 2>/dev/null || true
+            cp -v /tmp/mnt/nonhlos/image/wlanmdsp.mbn   build/firmware/qcom/sm6225/xiaomi/xun/ 2>/dev/null || true
+            cp -v /tmp/mnt/nonhlos/image/bdwlan*        build/firmware/qcom/sm6225/xiaomi/xun/ 2>/dev/null || true
+            cp -v /tmp/mnt/nonhlos/image/bd84*          build/firmware/qcom/sm6225/xiaomi/xun/ 2>/dev/null || true
+          elif [ -d /tmp/mnt/nonhlos ]; then
+            # Some packages put files at root of the FAT
+            cp -v /tmp/mnt/nonhlos/adsp*          build/firmware/qcom/sm6225/xiaomi/xun/ 2>/dev/null || true
+            cp -v /tmp/mnt/nonhlos/modem*         build/firmware/qcom/sm6225/xiaomi/xun/ 2>/dev/null || true
+            cp -v /tmp/mnt/nonhlos/wlanmdsp.mbn   build/firmware/qcom/sm6225/xiaomi/xun/ 2>/dev/null || true
+            cp -v /tmp/mnt/nonhlos/bdwlan*        build/firmware/qcom/sm6225/xiaomi/xun/ 2>/dev/null || true
+            cp -v /tmp/mnt/nonhlos/bd84*          build/firmware/qcom/sm6225/xiaomi/xun/ 2>/dev/null || true
+          fi
+
+          # Copy Bluetooth (rename cm* → cr*)
+          if [ -d /tmp/mnt/btfm/image ]; then
+            cp -v /tmp/mnt/btfm/image/cmbtfw13.tlv build/firmware/qca/crbtfw13.tlv 2>/dev/null || true
+            cp -v /tmp/mnt/btfm/image/cmnv13.bin   build/firmware/qca/crnv13.bin   2>/dev/null || true
+          elif [ -d /tmp/mnt/btfm ]; then
+            cp -v /tmp/mnt/btfm/cmbtfw13.tlv build/firmware/qca/crbtfw13.tlv 2>/dev/null || true
+            cp -v /tmp/mnt/btfm/cmnv13.bin   build/firmware/qca/crnv13.bin   2>/dev/null || true
+          fi
+
+          echo "=== Collected firmware files ==="
+          find build/firmware -type f | sort
+          du -sh build/firmware
+
+          COUNT=$(find build/firmware -type f | wc -l)
+          echo "File count: $COUNT"
+          if [ "$COUNT" -lt 3 ]; then
+            echo "ERROR: Too few files extracted"
+            exit 1
+          fi
+
+      - name: Commit and push
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          git add -f build/firmware/
+          git status
+
+          if git diff --cached --quiet; then
+            echo "Nothing to commit"
+            exit 1
+          else
+            git commit -m "firmware: add extracted blobs for xiaomi-xun (from NON-HLOS + BTFM)"
+            git push
+            echo "Firmware committed and pushed successfully"
+          fi
+
+      - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: rom-layout
-          path: /tmp/rom-filelist.txt
+          name: firmware-xiaomi-xun
+          path: build/firmware/
