@@ -74,11 +74,16 @@ fi
 
 # The e127de2a CCI patch adds the camera I2C sub-buses but leaves them
 # unlabeled; our camera nodes reference them by label.
-if ! grep -q 'cci_i2c0:' "$SRC/arch/arm64/boot/dts/qcom/sm6225.dtsi"; then
-patch -d "$SRC" -p1 -s -N <"$ROOT/patches/cci-i2c-labels.patch" || {
-echo "CCI I2C label patch did not apply cleanly" >&2
-exit 1
-}
+CCI_DTSI=$SRC/arch/arm64/boot/dts/qcom/sm6225.dtsi
+if ! grep -q 'cci_i2c0:' "$CCI_DTSI"; then
+	sed -i \
+		-e 's/^\([[:blank:]]*\)i2c-bus@0 {/\1cci_i2c0: i2c-bus@0 {/' \
+		-e 's/^\([[:blank:]]*\)i2c-bus@1 {/\1cci_i2c1: i2c-bus@1 {/' \
+		"$CCI_DTSI"
+	grep -q 'cci_i2c0:' "$CCI_DTSI" && grep -q 'cci_i2c1:' "$CCI_DTSI" || {
+		echo "failed to label CCI I2C buses in $CCI_DTSI" >&2
+		exit 1
+	}
 fi
 
 # The BQ2589X is a BQ25890-compatible charger with part number 4.
