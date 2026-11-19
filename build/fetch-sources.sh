@@ -67,7 +67,8 @@ for sha in $SM6225_COMMITS; do
 done
 
 # --- tapas bring-up tree and its boot image (source of the shim) ---------
-if [ ! -d "$ROOT/tapas-bringup" ]; then
+if [ ! -f "$ROOT/tapas-bringup/config/base.config" ]; then
+	rm -rf "$ROOT/tapas-bringup"
 	git clone "$TAPAS_REPO" "$ROOT/tapas-bringup"
 	git -C "$ROOT/tapas-bringup" checkout -q "$TAPAS_REV"
 fi
