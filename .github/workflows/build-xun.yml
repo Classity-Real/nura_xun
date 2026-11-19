@@ -1,0 +1,64 @@
+name: Build xun kernel
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - "build/**"
+      - "scripts/**"
+      - ".github/workflows/build-xun.yml"
+
+jobs:
+  build:
+    runs-on: namespace-profile-workshop
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Cache build/ downloads and kernel work dir
+        uses: namespacelabs/nscloud-cache-action@v1
+        with:
+          path: |
+            build/src
+            build/work
+            build/downloads
+            build/tools
+            build/rootfs-work
+            build/tapas-bringup
+            build/tapas-images
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            tar patch git curl \
+            build-essential bc bison flex \
+            libssl-dev libelf-dev \
+            clang lld llvm \
+            python3 cpio
+
+      - name: Fetch sources
+        working-directory: build
+        run: ./fetch-sources.sh
+
+      - name: Sync pmaports
+        run: ./scripts/sync-pmaports.sh
+
+      - name: Build kernel + boot image
+        working-directory: build
+        run: ./build-xun.sh
+
+      - name: Upload build log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-log
+          path: build/build.log
+          if-no-files-found: ignore
+
+      - name: Upload boot image
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: boot-xun-img
+          path: build/out/boot-xun.img

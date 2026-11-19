@@ -72,6 +72,15 @@ if ! grep -q hi556_of_match "$SRC/drivers/media/i2c/hi556.c"; then
 	}
 fi
 
+# The e127de2a CCI patch adds the camera I2C sub-buses but leaves them
+# unlabeled; our camera nodes reference them by label.
+if ! grep -q 'cci_i2c0:' "$SRC/arch/arm64/boot/dts/qcom/sm6225.dtsi"; then
+patch -d "$SRC" -p1 -s -N <"$ROOT/patches/cci-i2c-labels.patch" || {
+echo "CCI I2C label patch did not apply cleanly" >&2
+exit 1
+}
+fi
+
 # The BQ2589X is a BQ25890-compatible charger with part number 4.
 if ! grep -q 'BQ2589X reports part number 4' "$SRC/drivers/power/supply/bq25890_charger.c"; then
 	patch -d "$SRC" -p1 -s -N <"$ROOT/patches/bq2589x-id.patch" || {
@@ -268,7 +277,7 @@ grep -v '^#' "$WORK/xun.config" | grep . | while IFS= read -r opt; do
 done
 
 # --- build ---------------------------------------------------------------
-make -C "$SRC" O="$KO" ARCH=arm64 LLVM=1 -j"$(nproc)" Image qcom/sm6225-xiaomi-xun.dtb
+make -C "$SRC" O="$KO" ARCH=arm64 LLVM=1 -j"$(nproc)" Image qcom/sm6225-xiaomi-xun.dtb 2>&1 | tee "$ROOT/build.log"
 ls -l "$KO/arch/arm64/boot/Image" "$KO/$DTS_DIR/sm6225-xiaomi-xun.dtb"
 
 # --- boot image v4 -------------------------------------------------------

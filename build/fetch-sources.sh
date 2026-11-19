@@ -81,7 +81,7 @@ git -C "$DL/panel-generator" checkout -q "$PANELGEN_REV"
 	git clone "$AUDIOREACH_REPO" "$DL/audioreach-topology"
 git -C "$DL/audioreach-topology" checkout -q "$AUDIOREACH_REV"
 [ -d "$DL/ft8203-reference" ] ||
-	git clone "$FTP8203_REPO" "$DL/ft8203-reference"
+	git clone "$FTP8203_REPO" "$DL/ft8203-reference" || echo "warning: ft8203-reference unavailable, skipping (reference only, not needed to build)" || echo "warning: ft8203-reference unavailable, skipping (reference only, not needed to build)"
 
 # --- Alpine bits the rootfs needs ----------------------------------------
 # busybox-static for the kernel initramfs, apk-tools-static to build a rootfs
