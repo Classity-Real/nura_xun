@@ -48,8 +48,10 @@ PANELGEN_REV=28c4df25628f6241ce925af15637a443ea2b3bb5
 AUDIOREACH_REPO=https://github.com/linux-msm/audioreach-topology.git
 AUDIOREACH_REV=d6bb205aca5f4b8fa6b2f44cf8b5f6a081cbf037
 
-# FT8203 over GENI SPI, the reference the touch driver started from.
-FTP8203_REPO=https://github.com/RigoLigoRLC/unixnu-nativefocaltech.git
+# FT8203 over GENI SPI, the reference the touch driver started from. The
+# repo was renamed/repurposed around a Samsung Tab S7 FE (XNU HID) target,
+# but it's the same Fts8203.c/.h FocalTech-over-GENI-SPI protocol code.
+FTP8203_REPO=https://github.com/RigoLigoRLC/unixnu-nativefocaltechtouch.git
 
 # Adreno zap/sqe firmware for the sibling SM6225 device (spes); xun.config
 # embeds a610_zap.* and a630_sqe.fw into the kernel.
