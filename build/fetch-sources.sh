@@ -68,7 +68,7 @@ done
 
 # --- tapas bring-up tree and its boot image (source of the shim) ---------
 if [ ! -f "$ROOT/tapas-bringup/config/base.config" ]; then
-	rm -rf "$ROOT/tapas-bringup"
+	find "$ROOT/tapas-bringup" -mindepth 1 -delete 2>/dev/null || true
 	git clone "$TAPAS_REPO" "$ROOT/tapas-bringup"
 	git -C "$ROOT/tapas-bringup" checkout -q "$TAPAS_REV"
 fi
