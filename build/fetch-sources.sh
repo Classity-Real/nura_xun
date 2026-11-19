@@ -7,7 +7,9 @@
 # Everything lands where build-xun.sh and the scripts expect it, and existing
 # files are kept, so re-running only fetches what is missing.
 #
-# Firmware is not here: it is pulled from the tablet itself, see docs/BUILD.md.
+# Most firmware is pulled from the tablet itself, see docs/BUILD.md. The
+# Adreno zap/sqe firmware is the one exception: it comes from the
+# firmware-xiaomi-spes postmarketOS package, so it is fetched here too.
 set -eu
 ROOT=$(cd "$(dirname "$0")" && pwd)
 SRC=$ROOT/src
@@ -49,6 +51,11 @@ AUDIOREACH_REV=d6bb205aca5f4b8fa6b2f44cf8b5f6a081cbf037
 # FT8203 over GENI SPI, the reference the touch driver started from.
 FTP8203_REPO=https://github.com/RigoLigoRLC/unixnu-nativefocaltech.git
 
+# Adreno zap/sqe firmware for the sibling SM6225 device (spes); xun.config
+# embeds a610_zap.* and a630_sqe.fw into the kernel.
+SPES_FW_REPO=https://gitlab.postmarketos.org/sm6225-mainline/firmwares/firmware-xiaomi-spes.git
+SPES_FW_SUBDIR=qcom/sm6225/XIAOMI/SPES
+
 fetch() { # fetch <url> <file>
 	[ -s "$2" ] && return 0
 	echo "fetching $2"
@@ -82,7 +89,18 @@ git -C "$DL/panel-generator" checkout -q "$PANELGEN_REV"
 	git clone "$AUDIOREACH_REPO" "$DL/audioreach-topology"
 git -C "$DL/audioreach-topology" checkout -q "$AUDIOREACH_REV"
 [ -d "$DL/ft8203-reference" ] ||
-	git clone "$FTP8203_REPO" "$DL/ft8203-reference" || echo "warning: ft8203-reference unavailable, skipping (reference only, not needed to build)" || echo "warning: ft8203-reference unavailable, skipping (reference only, not needed to build)"
+	git clone "$FTP8203_REPO" "$DL/ft8203-reference" ||
+	echo "warning: ft8203-reference unavailable, skipping (reference only, not needed to build)"
+
+# --- Adreno zap/sqe firmware (baked into the kernel) ----------------------
+FWDIR=$ROOT/firmware/qcom
+mkdir -p "$FWDIR"
+if [ ! -s "$FWDIR/a630_sqe.fw" ]; then
+	rm -rf "$DL/firmware-xiaomi-spes"
+	git clone --depth 1 "$SPES_FW_REPO" "$DL/firmware-xiaomi-spes"
+	cp "$DL/firmware-xiaomi-spes/$SPES_FW_SUBDIR"/a610_zap.* "$FWDIR/"
+	cp "$DL/firmware-xiaomi-spes/$SPES_FW_SUBDIR"/a630_sqe.fw "$FWDIR/"
+fi
 
 # --- Alpine bits the rootfs needs ----------------------------------------
 # busybox-static for the kernel initramfs, apk-tools-static to build a rootfs
