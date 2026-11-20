@@ -258,8 +258,21 @@ grep -q 'ft8203-spi' "$TS/Makefile" ||
 grep -q 'sm6225-xiaomi-xun.dtb' "$SRC/$DTS_DIR/Makefile" ||
 	echo 'dtb-$(CONFIG_ARCH_QCOM) += sm6225-xiaomi-xun.dtb' >>"$SRC/$DTS_DIR/Makefile"
 
+# Build and validate the static aarch64 BusyBox used by the tapas initramfs.
+"$ROOT/build/build-busybox.sh"
+
 # --- initramfs ------------------------------------------------------------
 BUSYBOX=$ROOT/tools/bin/busybox.static
+for applet in telnetd udhcpd ifconfig devmem setsid cttyhack dd od tr losetup; do
+	"$BUSYBOX" --list | grep -qx "$applet" || {
+		echo "BusyBox is missing required applet: $applet" >&2
+		exit 1
+	}
+done
+file "$BUSYBOX" | grep -Eqi 'ARM aarch64.*static(ally|-pie)' || {
+	echo "BusyBox is not a static aarch64 binary: $(file "$BUSYBOX")" >&2
+	exit 1
+}
 cat >"$WORK/initramfs.list" <<EOF
 dir /bin 755 0 0
 file /bin/busybox $BUSYBOX 755 0 0
