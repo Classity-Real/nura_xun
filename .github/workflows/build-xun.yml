@@ -71,7 +71,9 @@ jobs:
           path: build/out/boot-xun.img
           compression-level: 0
 
+  # Full Alpine+GNOME image is heavy — only on manual dispatch
   install-image:
+    if: github.event_name == 'workflow_dispatch'
     runs-on: namespace-profile-workshop
     steps:
       - name: Checkout
@@ -93,7 +95,7 @@ jobs:
             android-sdk-libsparse-utils \
             docker.io \
             qemu-user-static binfmt-support \
-            curl tar gzip
+            curl tar gzip file
 
           sudo systemctl start docker || sudo service docker start || true
           docker run --rm --privileged multiarch/qemu-user-static --reset -p yes || true
@@ -106,47 +108,75 @@ jobs:
         working-directory: build
         run: ./fetch-sources.sh
 
-      - name: Ensure Alpine minirootfs (mini.tar.gz)
+      - name: Force Alpine minirootfs into place
         working-directory: build
         run: |
           set -eux
           mkdir -p rootfs-work
 
-          # If cache left an empty or missing file, force a real download.
+          # Always re-validate; cache often leaves a 0-byte or missing file
+          NEED_DOWNLOAD=0
           if [ ! -s rootfs-work/mini.tar.gz ]; then
-            echo "mini.tar.gz missing or empty — downloading"
-            # Resolve latest name from the mirror, with a pinned fallback.
-            MINI=$(curl -fsSL "https://mirrors.tuna.tsinghua.edu.cn/alpine/latest-stable/releases/aarch64/latest-releases.yaml" \
-              | grep -oE 'alpine-minirootfs-[0-9.]+-aarch64\.tar\.gz' | head -1 || true)
+            NEED_DOWNLOAD=1
+          elif ! tar -tzf rootfs-work/mini.tar.gz >/dev/null 2>&1; then
+            echo "existing mini.tar.gz is corrupt — re-downloading"
+            rm -f rootfs-work/mini.tar.gz
+            NEED_DOWNLOAD=1
+          fi
 
-            if [ -z "$MINI" ]; then
-              # Fallback: known recent 3.22 / 3.23 style name pattern — try common ones
-              for cand in \
-                alpine-minirootfs-3.22.0-aarch64.tar.gz \
-                alpine-minirootfs-3.21.3-aarch64.tar.gz \
-                alpine-minirootfs-3.20.6-aarch64.tar.gz; do
-                if curl -fsI "https://mirrors.tuna.tsinghua.edu.cn/alpine/latest-stable/releases/aarch64/$cand" >/dev/null 2>&1; then
-                  MINI=$cand
-                  break
+          if [ "$NEED_DOWNLOAD" = 1 ]; then
+            # Try several mirrors / naming strategies
+            downloaded=0
+            for base in \
+              "https://mirrors.tuna.tsinghua.edu.cn/alpine/latest-stable/releases/aarch64" \
+              "https://dl-cdn.alpinelinux.org/alpine/latest-stable/releases/aarch64" \
+              "https://mirrors.aliyun.com/alpine/latest-stable/releases/aarch64"; do
+
+              echo "Trying mirror: $base"
+              # Prefer the name advertised by latest-releases.yaml
+              name=$(curl -fsSL "$base/latest-releases.yaml" 2>/dev/null \
+                | grep -oE 'alpine-minirootfs-[0-9.]+-aarch64\.tar\.gz' | head -1 || true)
+
+              if [ -z "$name" ]; then
+                # Fallback candidates
+                for cand in \
+                  alpine-minirootfs-3.22.1-aarch64.tar.gz \
+                  alpine-minirootfs-3.22.0-aarch64.tar.gz \
+                  alpine-minirootfs-3.21.3-aarch64.tar.gz \
+                  alpine-minirootfs-3.20.6-aarch64.tar.gz; do
+                  if curl -fsI "$base/$cand" >/dev/null 2>&1; then
+                    name=$cand
+                    break
+                  fi
+                done
+              fi
+
+              if [ -n "$name" ]; then
+                echo "Downloading $base/$name"
+                if curl -fL --retry 5 --retry-delay 3 -o rootfs-work/mini.tar.gz "$base/$name"; then
+                  if tar -tzf rootfs-work/mini.tar.gz >/dev/null 2>&1; then
+                    downloaded=1
+                    break
+                  fi
+                  echo "download was not a valid tar.gz"
+                  rm -f rootfs-work/mini.tar.gz
                 fi
-              done
-            fi
+              fi
+            done
 
-            if [ -z "$MINI" ]; then
-              echo "Could not resolve alpine-minirootfs name"
+            if [ "$downloaded" != 1 ]; then
+              echo "FATAL: could not download a valid alpine-minirootfs"
               exit 1
             fi
-
-            echo "Downloading $MINI"
-            curl -fL --retry 5 --retry-delay 5 \
-              -o rootfs-work/mini.tar.gz \
-              "https://mirrors.tuna.tsinghua.edu.cn/alpine/latest-stable/releases/aarch64/$MINI"
           fi
 
           ls -lh rootfs-work/mini.tar.gz
-          # Must be a real gzip tarball, not an HTML error page
-          file rootfs-work/mini.tar.gz | grep -qi 'gzip\|tar' 
-          tar -tzf rootfs-work/mini.tar.gz | head -5
+          file rootfs-work/mini.tar.gz
+          tar -tzf rootfs-work/mini.tar.gz | head -8
+
+          # Absolute path check that matches what the container will see
+          test -s "$PWD/rootfs-work/mini.tar.gz"
+          echo "Host path ready: $PWD/rootfs-work/mini.tar.gz"
 
       - name: Sync pmaports
         run: ./scripts/sync-pmaports.sh
@@ -162,6 +192,9 @@ jobs:
         working-directory: build
         run: |
           set -eux
+          # Final guard right before docker
+          test -s rootfs-work/mini.tar.gz
+          ls -lh rootfs-work/mini.tar.gz
           ./make-install-image.sh
           ls -lh out/xun-install.img out/xun-install.img.sparse
 
