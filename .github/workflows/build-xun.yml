@@ -78,7 +78,6 @@ jobs:
           compression-level: 0
 
   install-image:
-    if: github.event_name == 'workflow_dispatch'
     runs-on: namespace-profile-workshop
     steps:
       - name: Checkout
@@ -103,20 +102,22 @@ jobs:
             curl tar gzip file
 
           sudo systemctl start docker || sudo service docker start || true
+          sudo chmod 666 /var/run/docker.sock || true
           docker run --rm --privileged multiarch/qemu-user-static --reset -p yes || true
 
           docker version
-          which img2simg
+          which img2simg || sudo which img2simg
           docker run --rm --platform linux/arm64 alpine:3.24 uname -m
+          df -h
 
-      - name: Ensure mini.tar.gz only (no full fetch-sources)
+      - name: Ensure mini.tar.gz
         working-directory: build
         run: |
           set -eux
           mkdir -p rootfs-work
           MINI_URL="https://mirrors.tuna.tsinghua.edu.cn/alpine/latest-stable/releases/aarch64/alpine-minirootfs-3.24.0-aarch64.tar.gz"
           if [ ! -s rootfs-work/mini.tar.gz ] || ! tar -tzf rootfs-work/mini.tar.gz >/dev/null 2>&1; then
-            echo "Downloading mini.tar.gz from repo-pinned URL"
+            echo "Downloading mini.tar.gz"
             curl -fL --retry 5 --retry-delay 3 -o rootfs-work/mini.tar.gz "$MINI_URL"
           fi
           tar -tzf rootfs-work/mini.tar.gz | head -5
@@ -134,8 +135,18 @@ jobs:
         run: |
           set -eux
           test -s rootfs-work/mini.tar.gz
-          chmod +x make-install-image.sh || true
-          bash make-install-image.sh
+          chmod +x make-install-image.sh install-image-inner.sh || true
+
+          # Capture failure output clearly
+          if ! bash make-install-image.sh; then
+            echo "===== make-install-image.sh FAILED ====="
+            ls -la out/ || true
+            ls -la rootfs-work/ || true
+            docker ps -a || true
+            df -h || true
+            exit 1
+          fi
+
           ls -lh out/xun-install.img out/xun-install.img.sparse
 
       - name: Upload install image (GitHub, fallback)
