@@ -62,3 +62,55 @@ jobs:
         with:
           name: boot-xun-img
           path: build/out/boot-xun.img
+
+  install-image:
+    runs-on: namespace-profile-workshop
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Cache build/ downloads and rootfs work dir
+        uses: namespacelabs/nscloud-cache-action@v1
+        with:
+          path: |
+            build/rootfs-work
+            build/downloads
+            build/tools
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y android-sdk-libsparse-utils
+          # Docker + qemu binfmt for the aarch64 container are expected to
+          # already be present on the runner image; make-install-image.sh
+          # registers the aarch64 binfmt handler itself if missing.
+
+      - name: Fetch sources
+        working-directory: build
+        run: ./fetch-sources.sh
+
+      - name: Sync pmaports
+        run: ./scripts/sync-pmaports.sh
+
+      - name: Build full install image (Alpine + GNOME rootfs)
+        working-directory: build
+        run: ./make-install-image.sh
+
+      # GitHub's own artifact upload as a guaranteed, always-downloadable
+      # fallback — Namespace's upload-artifact is for the fast path below,
+      # but its retrieval story is a workflow-to-workflow action, not a
+      # confirmed direct web download, so don't rely on it alone.
+      - name: Upload install image (GitHub, fallback)
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: xun-install-img-sparse
+          path: build/out/xun-install.img.sparse
+
+      - name: Upload install image (Namespace mirror)
+        if: success()
+        uses: namespace-actions/upload-artifact@v1
+        with:
+          name: xun-install-img-sparse
+          path: build/out/xun-install.img.sparse
+          compression-level: 0
