@@ -41,7 +41,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y \
-            tar patch git curl \
+            tar patch git curl file \
             build-essential bc bison flex \
             libssl-dev libelf-dev \
             clang lld llvm \
