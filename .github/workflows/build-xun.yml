@@ -2,6 +2,15 @@ name: Build xun kernel
 
 on:
   workflow_dispatch:
+    inputs:
+      target:
+        description: "What to build"
+        type: choice
+        options:
+          - both
+          - boot
+          - userdata
+        default: both
   push:
     paths:
       - "build/**"
@@ -10,6 +19,7 @@ on:
 
 jobs:
   build:
+    if: ${{ github.event_name != 'workflow_dispatch' || inputs.target == 'boot' || inputs.target == 'both' }}
     runs-on: namespace-profile-workshop
     steps:
       - name: Checkout
@@ -78,6 +88,7 @@ jobs:
           compression-level: 0
 
   install-image:
+    if: ${{ github.event_name != 'workflow_dispatch' || inputs.target == 'userdata' || inputs.target == 'both' }}
     runs-on: namespace-profile-workshop
     steps:
       - name: Checkout
