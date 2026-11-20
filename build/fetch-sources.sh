@@ -85,6 +85,12 @@ fetch "https://busybox.net/downloads/busybox-$BUSYBOX_VERSION.tar.bz2" \
 	"$SRC/busybox-$BUSYBOX_VERSION.tar.bz2"
 rm -f "$ROOT/tools/bin/busybox.static"
 
+alpine_pkg() {
+	local name=$1
+	local arch=${2:-x86_64}
+	curl -s "$ALPINE_URL/main/$arch/" | tr '"' '\n' | grep -E "^${name}-[0-9].*\.apk$" | head -n1
+}
+
 fetch "$ALPINE_URL/main/x86_64/$(alpine_pkg apk-tools-static)" \
 	"$ROOT/rootfs-work/apk-tools.apk"
 
