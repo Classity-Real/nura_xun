@@ -14,7 +14,7 @@ HOST_GID=${HOST_GID:-1000}
 # Use the same mirror inside the container; dl-cdn is slow or unreachable from
 # here. openssl is for the password hash, e2fsprogs builds the image.
 printf '%s\n' "$MIRROR/main" "$MIRROR/community" >/etc/apk/repositories
-apk add --no-cache openssl e2fsprogs zstd >/dev/null
+apk add --no-cache openssl e2fsprogs zstd openssh-keygen >/dev/null
 
 rm -rf "$ROOT"
 mkdir -p "$ROOT" "$WORK/apk-cache"
@@ -145,10 +145,19 @@ ACCOUNTS
 chmod 600 "$ROOT/var/lib/AccountsService/users/xun"
 
 # --- SSH access ----------------------------------------------------------
+# Prefer build/ssh/xun_key.pub when present (local/developer builds).
+# In CI that file is usually missing — generate a disposable keypair so the
+# image still builds. Password auth remains enabled either way.
+SSH_DIR=$BASE/ssh
+mkdir -p "$SSH_DIR"
+if [ ! -s "$SSH_DIR/xun_key.pub" ]; then
+	echo "no $SSH_DIR/xun_key.pub — generating CI/dev key"
+	ssh-keygen -t ed25519 -N '' -f "$SSH_DIR/xun_key" -C "xun-ci" >/dev/null
+fi
 install -d -m 700 "$ROOT/root/.ssh"
-install -m 600 "$BASE/ssh/xun_key.pub" "$ROOT/root/.ssh/authorized_keys"
+install -m 600 "$SSH_DIR/xun_key.pub" "$ROOT/root/.ssh/authorized_keys"
 install -d -m 700 -o 1000 -g 1000 "$ROOT/home/xun/.ssh"
-install -m 600 -o 1000 -g 1000 "$BASE/ssh/xun_key.pub" \
+install -m 600 -o 1000 -g 1000 "$SSH_DIR/xun_key.pub" \
 	"$ROOT/home/xun/.ssh/authorized_keys"
 
 SSHD=$ROOT/etc/ssh/sshd_config
