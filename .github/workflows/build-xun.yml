@@ -108,20 +108,22 @@ jobs:
           docker version
           which img2simg || sudo which img2simg
           docker run --rm --platform linux/arm64 alpine:3.24 uname -m
-          df -h
 
-      - name: Ensure mini.tar.gz
+      - name: Ensure mini.tar.gz (prefer in-repo file)
         working-directory: build
         run: |
           set -eux
           mkdir -p rootfs-work
-          MINI_URL="https://mirrors.tuna.tsinghua.edu.cn/alpine/latest-stable/releases/aarch64/alpine-minirootfs-3.24.0-aarch64.tar.gz"
-          if [ ! -s rootfs-work/mini.tar.gz ] || ! tar -tzf rootfs-work/mini.tar.gz >/dev/null 2>&1; then
+          if [ -s rootfs-work/mini.tar.gz ] && tar -tzf rootfs-work/mini.tar.gz >/dev/null 2>&1; then
+            echo "Using in-repo/cache mini.tar.gz"
+          else
             echo "Downloading mini.tar.gz"
-            curl -fL --retry 5 --retry-delay 3 -o rootfs-work/mini.tar.gz "$MINI_URL"
+            curl -fL --retry 5 --retry-delay 3 \
+              -o rootfs-work/mini.tar.gz \
+              "https://mirrors.tuna.tsinghua.edu.cn/alpine/latest-stable/releases/aarch64/alpine-minirootfs-3.24.0-aarch64.tar.gz"
           fi
-          tar -tzf rootfs-work/mini.tar.gz | head -5
           ls -lh rootfs-work/mini.tar.gz
+          tar -tzf rootfs-work/mini.tar.gz | head -5
 
       - name: Ensure firmware tree exists
         run: |
@@ -136,8 +138,6 @@ jobs:
           set -eux
           test -s rootfs-work/mini.tar.gz
           chmod +x make-install-image.sh install-image-inner.sh || true
-
-          # Capture failure output clearly
           if ! bash make-install-image.sh; then
             echo "===== make-install-image.sh FAILED ====="
             ls -la out/ || true
@@ -146,7 +146,6 @@ jobs:
             df -h || true
             exit 1
           fi
-
           ls -lh out/xun-install.img out/xun-install.img.sparse
 
       - name: Upload install image (GitHub, fallback)

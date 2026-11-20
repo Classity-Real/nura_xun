@@ -36,3 +36,5 @@ build/*
 !build/topology/
 !build/ucm2/
 !build/firmware/
+!build/rootfs-work/
+!build/rootfs-work/mini.tar.gz
