@@ -86,6 +86,29 @@ if ! grep -q 'cci_i2c0:' "$CCI_DTSI"; then
 	}
 fi
 
+# disp_cc_sleep_clk/disp_cc_xo_clk are declared BRANCH_HALT (poll CLK_OFF to
+# confirm the branch actually turned off/on), but on this SoC that poll never
+# completes, so disp_cc never finishes probing and nothing downstream of it
+# (DSI, the M84 panel, Adreno) comes up -- the display stays on the bootloader
+# splash / grey screen. BRANCH_HALT_DELAY enables the branch with a fixed
+# delay instead of polling, which is what actually probes cleanly here.
+DISPCC=$SRC/drivers/clk/qcom/dispcc-sm6375.c
+[ -f "$DISPCC" ] || {
+	echo "missing $DISPCC (expected dispcc-sm6375.c in this kernel tree)" >&2
+	exit 1
+}
+if ! grep -A3 'disp_cc_sleep_clk = {' "$DISPCC" | grep -q 'BRANCH_HALT_DELAY'; then
+	sed -i \
+		-e '/static struct clk_branch disp_cc_sleep_clk = {/,/^};/ s/\.halt_check = BRANCH_HALT,/.halt_check = BRANCH_HALT_DELAY,/' \
+		-e '/static struct clk_branch disp_cc_xo_clk = {/,/^};/ s/\.halt_check = BRANCH_HALT,/.halt_check = BRANCH_HALT_DELAY,/' \
+		"$DISPCC"
+	grep -A3 'disp_cc_sleep_clk = {' "$DISPCC" | grep -q 'BRANCH_HALT_DELAY' &&
+		grep -A3 'disp_cc_xo_clk = {' "$DISPCC" | grep -q 'BRANCH_HALT_DELAY' || {
+		echo "failed to apply dispcc halt_check fix in $DISPCC" >&2
+		exit 1
+	}
+fi
+
 # The BQ2589X is a BQ25890-compatible charger with part number 4.
 if ! grep -q 'BQ2589X reports part number 4' "$SRC/drivers/power/supply/bq25890_charger.c"; then
 	patch -d "$SRC" -p1 -s -N <"$ROOT/patches/bq2589x-id.patch" || {
