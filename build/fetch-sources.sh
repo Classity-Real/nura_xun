@@ -23,9 +23,7 @@ SM6225_URL="https://gitlab.postmarketos.org/sm6225-mainline/kernels/linux-v.$KER
 ALPINE_URL="https://mirrors.tuna.tsinghua.edu.cn/alpine/latest-stable"
 
 # Commits of the sm6225-mainline stable-sm6225 branch that the plain kernel
-# tarball needs to support xun, applied in this order. They are SM6225 SoC
-# support (DPU/DSI/DSC, GPU, remoteprocs, GENI, WCN3990, PMIC). Patches for
-# later kernels (ae725a2c, b8463e4b) do not apply to 7.2.1.
+# tarball needs to support xun, applied in this order.
 SM6225_COMMITS="
 650f459de5b9eb6f4f73728fd935d34677074965
 8b6545f79b5ff3e589436c0746fc3014739dc12c
@@ -33,29 +31,25 @@ f5a976a8334c7563137352eaafe8d49a2a3b8c6a
 e127de2a6297931b1abce1fb5b13a415163c325e
 "
 
-# Bring-up tree for the Redmi Note 12 4G (tapas): its initramfs init, v4 boot
-# shim and kernel base config are the starting point of this port.
 TAPAS_REPO=https://github.com/Sype0/pmos-tapas.git
 TAPAS_REV=5dee84cc5d7939a1042cf9daf2a21e67ab5c3579
 TAPAS_IMAGE_URL=https://github.com/Sype0/pmos-tapas/releases/download/latest/boot-tapas-safe.img
 
-# Generates a mainline DRM panel driver from a stock DSI panel node; used once
-# to produce kernel-panel/*.c.
 PANELGEN_REPO=https://github.com/msm8916-mainline/linux-mdss-dsi-panel-driver-generator.git
 PANELGEN_REV=28c4df25628f6241ce925af15637a443ea2b3bb5
 
-# AudioReach m4 macros; mktplg.sh builds the sound card topology from them.
 AUDIOREACH_REPO=https://github.com/linux-msm/audioreach-topology.git
 AUDIOREACH_REV=d6bb205aca5f4b8fa6b2f44cf8b5f6a081cbf037
 
-# FT8203 over GENI SPI, the reference the touch driver started from.
 FTP8203_REPO=https://github.com/RigoLigoRLC/unixnu-nativefocaltechtouch.git
 
-# Adreno zap/sqe from the sibling SM6225 device package (public).
 SPES_FW_REPO=https://gitlab.postmarketos.org/sm6225-mainline/firmwares/firmware-xiaomi-spes.git
 SPES_FW_SUBDIR=qcom/sm6225/XIAOMI/SPES
 
-fetch() { # fetch <url> <file>
+# Pinned Alpine 3.24.0 aarch64 minirootfs (always saved as mini.tar.gz).
+MINI_URL="https://mirrors.tuna.tsinghua.edu.cn/alpine/latest-stable/releases/aarch64/alpine-minirootfs-3.24.0-aarch64.tar.gz"
+
+fetch() {
 	url=$1
 	file=$2
 	if [ -s "$file" ]; then
@@ -74,8 +68,7 @@ for sha in $SM6225_COMMITS; do
 	fetch "$SM6225_URL/-/commit/$sha.patch" "$SRC/patches/$short.patch"
 done
 
-# --- tapas bring-up (v4 shim source + base config) -------------------------
-# Cache can leave an empty directory; require real content.
+# --- tapas bring-up -------------------------------------------------------
 if [ ! -f "$ROOT/tapas-bringup/config/base.config" ]; then
 	find "$ROOT/tapas-bringup" -mindepth 1 -delete 2>/dev/null || true
 	git clone "$TAPAS_REPO" "$ROOT/tapas-bringup"
@@ -92,9 +85,9 @@ git -C "$DL/panel-generator" checkout -q "$PANELGEN_REV"
 git -C "$DL/audioreach-topology" checkout -q "$AUDIOREACH_REV"
 [ -d "$DL/ft8203-reference" ] ||
 	git clone "$FTP8203_REPO" "$DL/ft8203-reference" ||
-	echo "warning: ft8203-reference unavailable, skipping (reference only, not needed to build)"
+	echo "warning: ft8203-reference unavailable, skipping"
 
-# --- Adreno zap/sqe firmware (baked into the kernel) ----------------------
+# --- Adreno zap/sqe -------------------------------------------------------
 FWDIR=$ROOT/firmware/qcom
 mkdir -p "$FWDIR"
 if [ ! -s "$FWDIR/a630_sqe.fw" ]; then
@@ -104,11 +97,11 @@ if [ ! -s "$FWDIR/a630_sqe.fw" ]; then
 	cp "$DL/firmware-xiaomi-spes/$SPES_FW_SUBDIR"/a630_sqe.fw "$FWDIR/"
 fi
 
-# --- Alpine bits the rootfs needs ----------------------------------------
-# busybox-static for the kernel initramfs, apk-tools-static to build a rootfs
-# on a non-Alpine host, and the Alpine minirootfs itself.
-alpine_pkg() { # alpine_pkg <name>  -> the .apk file name on the mirror
-	curl -s "$ALPINE_URL/main/x86_64/" | grep -o "$1-[0-9][^"]*\.apk" | head -n1
+# --- Alpine bits ----------------------------------------------------------
+# Avoid nested double-quotes in the grep character class (that broke the script).
+alpine_pkg() {
+	local name=$1
+	curl -s "$ALPINE_URL/main/x86_64/" | grep -oE "$name-[0-9][^[:space:]]+\.apk" | head -n1
 }
 
 if [ ! -x "$ROOT/tools/bin/busybox.static" ]; then
@@ -120,8 +113,6 @@ fi
 fetch "$ALPINE_URL/main/x86_64/$(alpine_pkg apk-tools-static)" \
 	"$ROOT/rootfs-work/apk-tools.apk"
 
-# Pinned Alpine 3.24.0 aarch64 minirootfs (saved as mini.tar.gz).
-MINI_URL="https://mirrors.tuna.tsinghua.edu.cn/alpine/latest-stable/releases/aarch64/alpine-minirootfs-3.24.0-aarch64.tar.gz"
 if [ ! -s "$ROOT/rootfs-work/mini.tar.gz" ] || ! tar -tzf "$ROOT/rootfs-work/mini.tar.gz" >/dev/null 2>&1; then
 	rm -f "$ROOT/rootfs-work/mini.tar.gz"
 	fetch "$MINI_URL" "$ROOT/rootfs-work/mini.tar.gz"
