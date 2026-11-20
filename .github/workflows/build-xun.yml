@@ -39,14 +39,20 @@ jobs:
 
       - name: Fetch sources
         working-directory: build
-        run: ./fetch-sources.sh
+        run: |
+          chmod +x fetch-sources.sh || true
+          bash fetch-sources.sh
 
       - name: Sync pmaports
-        run: ./scripts/sync-pmaports.sh
+        run: |
+          chmod +x scripts/sync-pmaports.sh || true
+          bash scripts/sync-pmaports.sh
 
       - name: Build kernel + boot image
         working-directory: build
-        run: ./build-xun.sh
+        run: |
+          chmod +x build-xun.sh || true
+          bash build-xun.sh
 
       - name: Upload build log
         if: always()
@@ -107,8 +113,6 @@ jobs:
         working-directory: build
         run: |
           set -eux
-          # Do NOT run fetch-sources here — user already has what is needed.
-          # Only verify the one file the image builder requires.
           if [ ! -s rootfs-work/mini.tar.gz ]; then
             echo "Missing build/rootfs-work/mini.tar.gz"
             echo "Download once:"
@@ -131,7 +135,8 @@ jobs:
         run: |
           set -eux
           test -s rootfs-work/mini.tar.gz
-          ./make-install-image.sh
+          chmod +x make-install-image.sh || true
+          bash make-install-image.sh
           ls -lh out/xun-install.img out/xun-install.img.sparse
 
       - name: Upload install image (GitHub, fallback)
