@@ -259,7 +259,7 @@ grep -q 'sm6225-xiaomi-xun.dtb' "$SRC/$DTS_DIR/Makefile" ||
 	echo 'dtb-$(CONFIG_ARCH_QCOM) += sm6225-xiaomi-xun.dtb' >>"$SRC/$DTS_DIR/Makefile"
 
 # Build and validate the static aarch64 BusyBox used by the tapas initramfs.
-"$ROOT/build/build-busybox.sh"
+bash "$ROOT/build/build-busybox.sh"
 
 # --- initramfs ------------------------------------------------------------
 BUSYBOX=$ROOT/tools/bin/busybox.static
