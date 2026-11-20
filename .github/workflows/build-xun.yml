@@ -44,25 +44,6 @@ jobs:
       - name: Sync pmaports
         run: ./scripts/sync-pmaports.sh
 
-      # Touch and Bluetooth firmware can only come off the physical tablet
-      # (see docs/BUILD.md / DOWNLOADS.md) so CI has no real source for them.
-      # CONFIG_EXTRA_FIRMWARE still needs the files to exist to compile; a
-      # 1-byte placeholder satisfies the build rule without claiming to be
-      # real firmware. This makes the CI image a compile check only — it is
-      # not flashable/complete. A real build still needs the tablet-extracted
-      # files in build/firmware/.
-      - name: Create CI-only firmware placeholders (not for flashing)
-        working-directory: build
-        run: |
-          mkdir -p firmware/qca
-          for f in \
-            firmware/focaltech_ts_fw_huaxing_ft8203.bin \
-            firmware/focaltech_ts_fw_boe_ft8203.bin \
-            firmware/qca/crbtfw13.tlv \
-            firmware/qca/crnv13.bin; do
-            [ -s "$f" ] || printf '\0' > "$f"
-          done
-
       - name: Build kernel + boot image
         working-directory: build
         run: ./build-xun.sh
