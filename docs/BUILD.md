@@ -58,7 +58,9 @@ outside git.
 | FT8203 GENI SPI reference | `https://github.com/RigoLigoRLC/unixnu-nativefocaltech.git` | `master` |
 | BusyBox source, `apk-tools-static`, Alpine minirootfs | `https://busybox.net/downloads/` and `https://mirrors.tuna.tsinghua.edu.cn/alpine/latest-stable/` | BusyBox 1.37.0; Alpine 3.24 |
 
-BusyBox is compiled as a static aarch64 binary by `./build-busybox.sh` inside an aarch64 Alpine container. Alpine's packaged `busybox-static` does not include all applets required by the tapas initramfs, especially `telnetd` and `udhcpd`. The build checks the architecture, static linkage and required applets before using the binary.\n\nEverything lands in `build/src`, `build/tapas-bringup`, `build/tapas-images`,
+BusyBox is compiled as a static aarch64 binary by `bash ./build-busybox.sh` inside an aarch64 Alpine container. Alpine's packaged `busybox-static` does not include all applets required by the tapas initramfs, especially `telnetd` and `udhcpd`. The build checks the architecture, static linkage and required applets before using the binary.
+
+Everything lands in `build/src`, `build/tapas-bringup`, `build/tapas-images`,
 `build/tools`, `build/rootfs-work` and `build/downloads`; all of it is out of
 git.
 
