@@ -79,34 +79,12 @@ if [ ! -s "$FWDIR/a630_sqe.fw" ]; then
 	cp "$DL/firmware-xiaomi-spes/$SPES_FW_SUBDIR"/a630_sqe.fw "$FWDIR/"
 fi
 
-alpine_pkg() {
-	local name=$1
-	local arch=${2:-x86_64}
-	curl -s "$ALPINE_URL/main/$arch/" | tr '"' '\n' | grep -E "^${name}-[0-9].*\.apk$" | head -n1
-}
+# Build our own BusyBox: Alpine's package omits applets required by tapas init.
+BUSYBOX_VERSION=1.37.0
+fetch "https://busybox.net/downloads/busybox-$BUSYBOX_VERSION.tar.bz2" \
+	"$SRC/busybox-$BUSYBOX_VERSION.tar.bz2"
+rm -f "$ROOT/tools/bin/busybox.static"
 
-# This busybox.static ends up as /bin/busybox inside the DEVICE's initramfs
-# (build-xun.sh's initramfs.list), executed by the aarch64 kernel on the
-# tablet -- it must be an aarch64 binary, not whatever the build host is.
-# An x86_64 busybox here makes the kernel fail to exec /init with ENOEXEC
-# (error -8) since /init's shebang interpreter is unusable. A cache from
-# before this fix may still hold an x86_64 one, so check, not just existence.
-if [ -x "$ROOT/tools/bin/busybox.static" ] &&
-	! file "$ROOT/tools/bin/busybox.static" 2>/dev/null | grep -qi aarch64; then
-	echo "cached busybox.static is the wrong architecture, re-fetching"
-	rm -f "$ROOT/tools/bin/busybox.static"
-fi
-if [ ! -x "$ROOT/tools/bin/busybox.static" ]; then
-	rm -f "$ROOT/tools/busybox-static.apk"
-	pkg=$(alpine_pkg busybox-static aarch64)
-	fetch "$ALPINE_URL/main/aarch64/$pkg" "$ROOT/tools/busybox-static.apk"
-	tar -xzf "$ROOT/tools/busybox-static.apk" -C "$ROOT/tools" bin/busybox.static
-	chmod 755 "$ROOT/tools/bin/busybox.static"
-	file "$ROOT/tools/bin/busybox.static" | grep -qi aarch64 || {
-		echo "fetched busybox.static is not aarch64 -- $(file "$ROOT/tools/bin/busybox.static")" >&2
-		exit 1
-	}
-fi
 fetch "$ALPINE_URL/main/x86_64/$(alpine_pkg apk-tools-static)" \
 	"$ROOT/rootfs-work/apk-tools.apk"
 
