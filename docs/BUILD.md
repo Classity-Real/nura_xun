@@ -25,7 +25,7 @@ An x86_64 Linux host with:
 - `alsatplg` from `alsa-utils` (only to rebuild the audio topology),
 - `android-tools` on the host that flashes, or a second device running it,
 - `picocom` or `screen` for the serial console on `/dev/ttyACM0` (optional),
-- Docker for the full rootfs image. The image builder runs an aarch64 Alpine
+- Docker for the static aarch64 BusyBox build and the full rootfs image. The image builder runs an aarch64 Alpine
   container (a qemu-aarch64 binfmt handler is registered automatically), so
   the aarch64 package scripts run instead of failing with `Exec format error`,
 - `e2fsprogs`, `android-tools` (`img2simg`) and about 40 GB of disk for the
@@ -56,9 +56,9 @@ outside git.
 | Panel driver generator (used once for `kernel-panel/*.c`) | `https://github.com/msm8916-mainline/linux-mdss-dsi-panel-driver-generator.git` | `28c4df25628f6241ce925af15637a443ea2b3bb5` |
 | AudioReach topology macros | `https://github.com/linux-msm/audioreach-topology.git` | `d6bb205aca5f4b8fa6b2f44cf8b5f6a081cbf037` |
 | FT8203 GENI SPI reference | `https://github.com/RigoLigoRLC/unixnu-nativefocaltech.git` | `master` |
-| `busybox-static`, `apk-tools-static`, Alpine minirootfs | `https://mirrors.tuna.tsinghua.edu.cn/alpine/latest-stable/` | `latest-stable` (3.24) |
+| BusyBox source, `apk-tools-static`, Alpine minirootfs | `https://busybox.net/downloads/` and `https://mirrors.tuna.tsinghua.edu.cn/alpine/latest-stable/` | BusyBox 1.37.0; Alpine 3.24 |
 
-Everything lands in `build/src`, `build/tapas-bringup`, `build/tapas-images`,
+BusyBox is compiled as a static aarch64 binary by `./build-busybox.sh` inside an aarch64 Alpine container. Alpine's packaged `busybox-static` does not include all applets required by the tapas initramfs, especially `telnetd` and `udhcpd`. The build checks the architecture, static linkage and required applets before using the binary.\n\nEverything lands in `build/src`, `build/tapas-bringup`, `build/tapas-images`,
 `build/tools`, `build/rootfs-work` and `build/downloads`; all of it is out of
 git.
 
@@ -94,7 +94,7 @@ the rootfs is mounted.
 ./build-xun.sh       # -> out/boot-xun.img
 ```
 
-It applies the patches to `src/linux-7.2.1` (once, cached in `work/.patched`),
+It first builds and validates the static aarch64 BusyBox used by the initramfs. It applies the patches to `src/linux-7.2.1` (once, cached in `work/.patched`),
 installs the xun DTS, panel drivers, FT8203 touch driver and the SH366101 fuel
 gauge, merges `config/xun.config` into the kernel config, builds `Image` and
 `sm6225-xiaomi-xun.dtb`, and packs the v4 boot image with the tapas shim.
