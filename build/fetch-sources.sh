@@ -7,7 +7,9 @@
 # Everything lands where build-xun.sh and the scripts expect it, and existing
 # files are kept, so re-running only fetches what is missing.
 #
-# Firmware is not here: it is pulled from the tablet itself, see docs/BUILD.md.
+# Most firmware is pulled from the tablet itself, see docs/BUILD.md. The
+# Adreno zap/sqe firmware is the one exception: it comes from the
+# firmware-xiaomi-spes postmarketOS package, so it is fetched here too.
 set -eu
 ROOT=$(cd "$(dirname "$0")" && pwd)
 SRC=$ROOT/src
@@ -53,59 +55,53 @@ FTP8203_REPO=https://github.com/RigoLigoRLC/unixnu-nativefocaltechtouch.git
 SPES_FW_REPO=https://gitlab.postmarketos.org/sm6225-mainline/firmwares/firmware-xiaomi-spes.git
 SPES_FW_SUBDIR=qcom/sm6225/XIAOMI/SPES
 
-fetch() {
-	local url=$1 dest=$2
-	if [ -s "$dest" ]; then
+fetch() { # fetch <url> <file>
+	url=$1
+	file=$2
+	if [ -s "$file" ]; then
 		return 0
 	fi
 	echo "fetch $url"
-	curl -fL --retry 5 --retry-delay 3 -o "$dest" "$url"
+	curl -fL --retry 5 --retry-delay 3 -o "$file" "$url"
 }
 
-# --- kernel tarball -------------------------------------------------------
-if [ ! -s "$SRC/linux-$KERNEL.tar.xz" ]; then
-	fetch "$KERNEL_URL" "$SRC/linux-$KERNEL.tar.xz"
-fi
+# --- kernel ---------------------------------------------------------------
+fetch "$KERNEL_URL" "$SRC/linux-$KERNEL.tar.xz"
 
 # --- SM6225 patches -------------------------------------------------------
 for sha in $SM6225_COMMITS; do
 	short=${sha:0:8}
-	if [ ! -s "$SRC/patches/$short.patch" ]; then
-		fetch "$SM6225_URL/-/commit/$sha.patch" "$SRC/patches/$short.patch"
-	fi
+	fetch "$SM6225_URL/-/commit/$sha.patch" "$SRC/patches/$short.patch"
 done
 
-# --- tapas bring-up -------------------------------------------------------
-if [ ! -d "$ROOT/tapas-bringup/.git" ] || [ -z "$(ls -A "$ROOT/tapas-bringup" 2>/dev/null | grep -v '^\.')" ]; then
-	rm -rf "$ROOT/tapas-bringup"
+# --- tapas bring-up (v4 shim source + base config) -------------------------
+# Cache can leave an empty directory; require real content.
+if [ ! -f "$ROOT/tapas-bringup/config/base.config" ]; then
+	find "$ROOT/tapas-bringup" -mindepth 1 -delete 2>/dev/null || true
 	git clone "$TAPAS_REPO" "$ROOT/tapas-bringup"
-	git -C "$ROOT/tapas-bringup" checkout "$TAPAS_REV"
+	git -C "$ROOT/tapas-bringup" checkout -q "$TAPAS_REV"
 fi
-if [ ! -s "$ROOT/tapas-images/boot-tapas-safe.img" ]; then
-	fetch "$TAPAS_IMAGE_URL" "$ROOT/tapas-images/boot-tapas-safe.img"
-fi
+fetch "$TAPAS_IMAGE_URL" "$ROOT/tapas-images/boot-tapas-safe.img"
 
-# --- panel generator / audioreach / ft8203 references ---------------------
-if [ ! -d "$DL/panel-generator/.git" ]; then
+# --- tools ----------------------------------------------------------------
+[ -d "$DL/panel-generator" ] ||
 	git clone "$PANELGEN_REPO" "$DL/panel-generator"
-	git -C "$DL/panel-generator" checkout "$PANELGEN_REV"
-fi
-if [ ! -d "$DL/audioreach-topology/.git" ]; then
+git -C "$DL/panel-generator" checkout -q "$PANELGEN_REV"
+[ -d "$DL/audioreach-topology" ] ||
 	git clone "$AUDIOREACH_REPO" "$DL/audioreach-topology"
-	git -C "$DL/audioreach-topology" checkout "$AUDIOREACH_REV"
-fi
-if [ ! -d "$DL/ft8203-reference/.git" ]; then
-	git clone "$FTP8203_REPO" "$DL/ft8203-reference" || true
-fi
+git -C "$DL/audioreach-topology" checkout -q "$AUDIOREACH_REV"
+[ -d "$DL/ft8203-reference" ] ||
+	git clone "$FTP8203_REPO" "$DL/ft8203-reference" ||
+	echo "warning: ft8203-reference unavailable, skipping (reference only, not needed to build)"
 
-# --- Adreno zap / sqe (public, from firmware-xiaomi-spes) -----------------
+# --- Adreno zap/sqe firmware (baked into the kernel) ----------------------
 FWDIR=$ROOT/firmware/qcom
 mkdir -p "$FWDIR"
 if [ ! -s "$FWDIR/a630_sqe.fw" ]; then
 	rm -rf "$DL/firmware-xiaomi-spes"
 	git clone --depth 1 "$SPES_FW_REPO" "$DL/firmware-xiaomi-spes"
-	cp "$DL/firmware-xiaomi-spes/$SPES_FW_SUBDIR"/a610_zap.* "$FWDIR/" 2>/dev/null || true
-	cp "$DL/firmware-xiaomi-spes/$SPES_FW_SUBDIR"/a630_sqe.fw "$FWDIR/" 2>/dev/null || true
+	cp "$DL/firmware-xiaomi-spes/$SPES_FW_SUBDIR"/a610_zap.* "$FWDIR/"
+	cp "$DL/firmware-xiaomi-spes/$SPES_FW_SUBDIR"/a630_sqe.fw "$FWDIR/"
 fi
 
 # --- Alpine bits the rootfs needs ----------------------------------------
@@ -125,12 +121,10 @@ fetch "$ALPINE_URL/main/x86_64/$(alpine_pkg apk-tools-static)" \
 	"$ROOT/rootfs-work/apk-tools.apk"
 
 # Pinned Alpine 3.24.0 aarch64 minirootfs (saved as mini.tar.gz).
-# Direct URL so CI does not depend on latest-releases.yaml parsing.
 MINI_URL="https://mirrors.tuna.tsinghua.edu.cn/alpine/latest-stable/releases/aarch64/alpine-minirootfs-3.24.0-aarch64.tar.gz"
 if [ ! -s "$ROOT/rootfs-work/mini.tar.gz" ] || ! tar -tzf "$ROOT/rootfs-work/mini.tar.gz" >/dev/null 2>&1; then
 	rm -f "$ROOT/rootfs-work/mini.tar.gz"
-	echo "fetch $MINI_URL -> rootfs-work/mini.tar.gz"
-	curl -fL --retry 5 --retry-delay 3 -o "$ROOT/rootfs-work/mini.tar.gz" "$MINI_URL"
+	fetch "$MINI_URL" "$ROOT/rootfs-work/mini.tar.gz"
 	tar -tzf "$ROOT/rootfs-work/mini.tar.gz" >/dev/null
 fi
 
