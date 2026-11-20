@@ -1,0 +1,84 @@
+name: Namespace artifact mirror
+
+# After a successful "Build xun kernel" run, re-publish the important
+# artifacts into Namespace high-performance storage so they are easy to
+# pull from other Namespace jobs / runners.
+
+on:
+  workflow_run:
+    workflows: ["Build xun kernel"]
+    types: [completed]
+  workflow_dispatch:
+    inputs:
+      run_id:
+        description: "Optional successful Build xun kernel run ID to mirror"
+        required: false
+        default: ""
+
+permissions:
+  actions: read
+  contents: read
+
+jobs:
+  mirror:
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      github.event.workflow_run.conclusion == 'success'
+    runs-on: namespace-profile-workshop
+    steps:
+      - name: Resolve source run
+        id: src
+        run: |
+          set -eux
+          if [ -n "${{ inputs.run_id }}" ]; then
+            RUN_ID="${{ inputs.run_id }}"
+          else
+            RUN_ID="${{ github.event.workflow_run.id }}"
+          fi
+          echo "run_id=$RUN_ID" >> "$GITHUB_OUTPUT"
+          echo "Mirroring artifacts from run $RUN_ID"
+
+      - name: Download GitHub artifacts from source run
+        uses: actions/download-artifact@v4
+        with:
+          run-id: ${{ steps.src.outputs.run_id }}
+          path: artifacts
+          # If the source run only produced some of the artifacts, continue
+          # with whatever is available.
+          merge-multiple: true
+
+      - name: Show what we got
+        run: |
+          set -eux
+          find artifacts -type f | sort || true
+          du -sh artifacts/* 2>/dev/null || true
+
+      - name: Upload boot image to Namespace
+        if: hashFiles('artifacts/boot-xun-img/**') != '' || hashFiles('artifacts/**/boot-xun.img') != ''
+        uses: namespace-actions/upload-artifact@v1
+        with:
+          name: boot-xun-img
+          path: |
+            artifacts/boot-xun-img/
+            artifacts/**/boot-xun.img
+          compression-level: 0
+          if-no-files-found: ignore
+
+      - name: Upload install image to Namespace
+        if: hashFiles('artifacts/xun-install-img-sparse/**') != '' || hashFiles('artifacts/**/xun-install.img.sparse') != ''
+        uses: namespace-actions/upload-artifact@v1
+        with:
+          name: xun-install-img-sparse
+          path: |
+            artifacts/xun-install-img-sparse/
+            artifacts/**/xun-install.img.sparse
+          compression-level: 0
+          if-no-files-found: ignore
+
+      - name: Upload build log to Namespace
+        if: hashFiles('artifacts/build-log/**') != ''
+        uses: namespace-actions/upload-artifact@v1
+        with:
+          name: build-log
+          path: artifacts/build-log/
+          if-no-files-found: ignore

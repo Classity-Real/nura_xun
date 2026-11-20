@@ -56,15 +56,24 @@ jobs:
           path: build/build.log
           if-no-files-found: ignore
 
-      - name: Upload boot image
+      - name: Upload boot image (GitHub)
         if: success()
         uses: actions/upload-artifact@v4
         with:
           name: boot-xun-img
           path: build/out/boot-xun.img
 
+      - name: Upload boot image (Namespace mirror)
+        if: success()
+        uses: namespace-actions/upload-artifact@v1
+        with:
+          name: boot-xun-img
+          path: build/out/boot-xun.img
+          compression-level: 0
+
   install-image:
     runs-on: namespace-profile-workshop
+    # Can run in parallel with build; only needs fetch-sources + device files
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -79,27 +88,55 @@ jobs:
 
       - name: Install build dependencies
         run: |
+          set -eux
           sudo apt-get update
-          sudo apt-get install -y android-sdk-libsparse-utils
-          # Docker + qemu binfmt for the aarch64 container are expected to
-          # already be present on the runner image; make-install-image.sh
-          # registers the aarch64 binfmt handler itself if missing.
+          sudo apt-get install -y \
+            android-sdk-libsparse-utils \
+            docker.io docker-buildx \
+            qemu-user-static binfmt-support \
+            curl tar gzip
+
+          # Ensure docker is running
+          sudo systemctl start docker || sudo service docker start || true
+          sudo usermod -aG docker "$USER" || true
+
+          # Register aarch64 binfmt (needed for alpine:3.24 --platform linux/arm64)
+          docker run --rm --privileged multiarch/qemu-user-static --reset -p yes || true
+
+          # Sanity checks
+          docker version
+          which img2simg
+          docker run --rm --platform linux/arm64 alpine:3.24 uname -m
 
       - name: Fetch sources
         working-directory: build
-        run: ./fetch-sources.sh
+        run: |
+          set -eux
+          ./fetch-sources.sh
+          # mini.tar.gz is required by install-image-inner.sh
+          test -s rootfs-work/mini.tar.gz
+          ls -lh rootfs-work/mini.tar.gz
 
       - name: Sync pmaports
         run: ./scripts/sync-pmaports.sh
 
+      - name: Ensure firmware tree exists
+        run: |
+          set -eux
+          # install-image-inner.sh does: cp -a build/firmware/. into the rootfs
+          mkdir -p build/firmware/qcom/sm6225/xiaomi/xun build/firmware/qca
+          # If real blobs are missing, leave empty dirs; the image still builds
+          # (runtime firmware loading will fail until real blobs are present).
+          find build/firmware -type f | head -20 || true
+          du -sh build/firmware || true
+
       - name: Build full install image (Alpine + GNOME rootfs)
         working-directory: build
-        run: ./make-install-image.sh
+        run: |
+          set -eux
+          ./make-install-image.sh
+          ls -lh out/xun-install.img out/xun-install.img.sparse
 
-      # GitHub's own artifact upload as a guaranteed, always-downloadable
-      # fallback — Namespace's upload-artifact is for the fast path below,
-      # but its retrieval story is a workflow-to-workflow action, not a
-      # confirmed direct web download, so don't rely on it alone.
       - name: Upload install image (GitHub, fallback)
         if: success()
         uses: actions/upload-artifact@v4
