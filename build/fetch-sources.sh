@@ -7,9 +7,7 @@
 # Everything lands where build-xun.sh and the scripts expect it, and existing
 # files are kept, so re-running only fetches what is missing.
 #
-# Most firmware is pulled from the tablet itself, see docs/BUILD.md. The
-# Adreno zap/sqe firmware is the one exception: it comes from the
-# firmware-xiaomi-spes postmarketOS package, so it is fetched here too.
+# Firmware is not here: it is pulled from the tablet itself, see docs/BUILD.md.
 set -eu
 ROOT=$(cd "$(dirname "$0")" && pwd)
 SRC=$ROOT/src
@@ -48,67 +46,73 @@ PANELGEN_REV=28c4df25628f6241ce925af15637a443ea2b3bb5
 AUDIOREACH_REPO=https://github.com/linux-msm/audioreach-topology.git
 AUDIOREACH_REV=d6bb205aca5f4b8fa6b2f44cf8b5f6a081cbf037
 
-# FT8203 over GENI SPI, the reference the touch driver started from. The
-# repo was renamed/repurposed around a Samsung Tab S7 FE (XNU HID) target,
-# but it's the same Fts8203.c/.h FocalTech-over-GENI-SPI protocol code.
+# FT8203 over GENI SPI, the reference the touch driver started from.
 FTP8203_REPO=https://github.com/RigoLigoRLC/unixnu-nativefocaltechtouch.git
 
-# Adreno zap/sqe firmware for the sibling SM6225 device (spes); xun.config
-# embeds a610_zap.* and a630_sqe.fw into the kernel.
+# Adreno zap/sqe from the sibling SM6225 device package (public).
 SPES_FW_REPO=https://gitlab.postmarketos.org/sm6225-mainline/firmwares/firmware-xiaomi-spes.git
 SPES_FW_SUBDIR=qcom/sm6225/XIAOMI/SPES
 
-fetch() { # fetch <url> <file>
-	[ -s "$2" ] && return 0
-	echo "fetching $2"
-	curl -L --fail --retry 3 --progress-bar -o "$2.part" "$1"
-	mv "$2.part" "$2"
+fetch() {
+	local url=$1 dest=$2
+	if [ -s "$dest" ]; then
+		return 0
+	fi
+	echo "fetch $url"
+	curl -fL --retry 5 --retry-delay 3 -o "$dest" "$url"
 }
 
-# --- kernel and SM6225 support -------------------------------------------
-fetch "$KERNEL_URL" "$SRC/linux-$KERNEL.tar.xz"
-if [ ! -d "$SRC/linux-$KERNEL" ]; then
-	echo "extracting linux-$KERNEL"
-	tar -xJf "$SRC/linux-$KERNEL.tar.xz" -C "$SRC"
+# --- kernel tarball -------------------------------------------------------
+if [ ! -s "$SRC/linux-$KERNEL.tar.xz" ]; then
+	fetch "$KERNEL_URL" "$SRC/linux-$KERNEL.tar.xz"
 fi
+
+# --- SM6225 patches -------------------------------------------------------
 for sha in $SM6225_COMMITS; do
-	fetch "$SM6225_URL/-/commit/$sha.patch" "$SRC/patches/${sha:0:8}.patch"
+	short=${sha:0:8}
+	if [ ! -s "$SRC/patches/$short.patch" ]; then
+		fetch "$SM6225_URL/-/commit/$sha.patch" "$SRC/patches/$short.patch"
+	fi
 done
 
-# --- tapas bring-up tree and its boot image (source of the shim) ---------
-if [ ! -f "$ROOT/tapas-bringup/config/base.config" ]; then
-	find "$ROOT/tapas-bringup" -mindepth 1 -delete 2>/dev/null || true
+# --- tapas bring-up -------------------------------------------------------
+if [ ! -d "$ROOT/tapas-bringup/.git" ] || [ -z "$(ls -A "$ROOT/tapas-bringup" 2>/dev/null | grep -v '^\.')" ]; then
+	rm -rf "$ROOT/tapas-bringup"
 	git clone "$TAPAS_REPO" "$ROOT/tapas-bringup"
-	git -C "$ROOT/tapas-bringup" checkout -q "$TAPAS_REV"
+	git -C "$ROOT/tapas-bringup" checkout "$TAPAS_REV"
 fi
-fetch "$TAPAS_IMAGE_URL" "$ROOT/tapas-images/boot-tapas-safe.img"
+if [ ! -s "$ROOT/tapas-images/boot-tapas-safe.img" ]; then
+	fetch "$TAPAS_IMAGE_URL" "$ROOT/tapas-images/boot-tapas-safe.img"
+fi
 
-# --- tools ----------------------------------------------------------------
-[ -d "$DL/panel-generator" ] ||
+# --- panel generator / audioreach / ft8203 references ---------------------
+if [ ! -d "$DL/panel-generator/.git" ]; then
 	git clone "$PANELGEN_REPO" "$DL/panel-generator"
-git -C "$DL/panel-generator" checkout -q "$PANELGEN_REV"
-[ -d "$DL/audioreach-topology" ] ||
+	git -C "$DL/panel-generator" checkout "$PANELGEN_REV"
+fi
+if [ ! -d "$DL/audioreach-topology/.git" ]; then
 	git clone "$AUDIOREACH_REPO" "$DL/audioreach-topology"
-git -C "$DL/audioreach-topology" checkout -q "$AUDIOREACH_REV"
-[ -d "$DL/ft8203-reference" ] ||
-	git clone "$FTP8203_REPO" "$DL/ft8203-reference" ||
-	echo "warning: ft8203-reference unavailable, skipping (reference only, not needed to build)"
+	git -C "$DL/audioreach-topology" checkout "$AUDIOREACH_REV"
+fi
+if [ ! -d "$DL/ft8203-reference/.git" ]; then
+	git clone "$FTP8203_REPO" "$DL/ft8203-reference" || true
+fi
 
-# --- Adreno zap/sqe firmware (baked into the kernel) ----------------------
+# --- Adreno zap / sqe (public, from firmware-xiaomi-spes) -----------------
 FWDIR=$ROOT/firmware/qcom
 mkdir -p "$FWDIR"
 if [ ! -s "$FWDIR/a630_sqe.fw" ]; then
 	rm -rf "$DL/firmware-xiaomi-spes"
 	git clone --depth 1 "$SPES_FW_REPO" "$DL/firmware-xiaomi-spes"
-	cp "$DL/firmware-xiaomi-spes/$SPES_FW_SUBDIR"/a610_zap.* "$FWDIR/"
-	cp "$DL/firmware-xiaomi-spes/$SPES_FW_SUBDIR"/a630_sqe.fw "$FWDIR/"
+	cp "$DL/firmware-xiaomi-spes/$SPES_FW_SUBDIR"/a610_zap.* "$FWDIR/" 2>/dev/null || true
+	cp "$DL/firmware-xiaomi-spes/$SPES_FW_SUBDIR"/a630_sqe.fw "$FWDIR/" 2>/dev/null || true
 fi
 
 # --- Alpine bits the rootfs needs ----------------------------------------
 # busybox-static for the kernel initramfs, apk-tools-static to build a rootfs
 # on a non-Alpine host, and the Alpine minirootfs itself.
 alpine_pkg() { # alpine_pkg <name>  -> the .apk file name on the mirror
-	curl -s "$ALPINE_URL/main/x86_64/" | grep -o "$1-[0-9][^\"]*\.apk" | head -n1
+	curl -s "$ALPINE_URL/main/x86_64/" | grep -o "$1-[0-9][^"]*\.apk" | head -n1
 }
 
 if [ ! -x "$ROOT/tools/bin/busybox.static" ]; then
@@ -119,10 +123,15 @@ if [ ! -x "$ROOT/tools/bin/busybox.static" ]; then
 fi
 fetch "$ALPINE_URL/main/x86_64/$(alpine_pkg apk-tools-static)" \
 	"$ROOT/rootfs-work/apk-tools.apk"
-if [ ! -s "$ROOT/rootfs-work/mini.tar.gz" ]; then
-	mini=$(curl -s "$ALPINE_URL/releases/aarch64/latest-releases.yaml" |
-		grep -o 'alpine-minirootfs-[0-9.]*-aarch64\.tar\.gz' | head -n1)
-	fetch "$ALPINE_URL/releases/aarch64/$mini" "$ROOT/rootfs-work/mini.tar.gz"
+
+# Pinned Alpine 3.24.0 aarch64 minirootfs (saved as mini.tar.gz).
+# Direct URL so CI does not depend on latest-releases.yaml parsing.
+MINI_URL="https://mirrors.tuna.tsinghua.edu.cn/alpine/latest-stable/releases/aarch64/alpine-minirootfs-3.24.0-aarch64.tar.gz"
+if [ ! -s "$ROOT/rootfs-work/mini.tar.gz" ] || ! tar -tzf "$ROOT/rootfs-work/mini.tar.gz" >/dev/null 2>&1; then
+	rm -f "$ROOT/rootfs-work/mini.tar.gz"
+	echo "fetch $MINI_URL -> rootfs-work/mini.tar.gz"
+	curl -fL --retry 5 --retry-delay 3 -o "$ROOT/rootfs-work/mini.tar.gz" "$MINI_URL"
+	tar -tzf "$ROOT/rootfs-work/mini.tar.gz" >/dev/null
 fi
 
 echo "sources are in place"
