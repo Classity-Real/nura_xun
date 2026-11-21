@@ -155,7 +155,7 @@ The rootfs is installed with `apk --root` inside an aarch64 container, so
 package triggers compile the GLib schemas, icon caches, font caches, MIME
 database and dconf database. The device files from `build/device`, the UCM
 profile and `build/firmware` are copied in, then `rootfs-init.sh` becomes
-`/sbin/init`. The ext4 filesystem is installed directly on the `userdata` partition and mounted read-write as the persistent root filesystem. System updates, installed packages, settings and files under `/home` survive reboots. The init script mounts `/tmp`, `/var/tmp`, `/run` and `/dev/shm` as RAM-backed tmpfs for transient data. The tmpfs size values are upper limits, not RAM reserved at boot.
+`/sbin/init`. The ext4 image is flashed to the `userdata` partition and mounted read-write as the persistent root filesystem. System updates, installed packages, settings and files under `/home` survive reboots. The init script mounts `/tmp`, `/var/tmp`, `/run` and `/dev/shm` as RAM-backed tmpfs for transient data. The tmpfs size values are upper limits, not RAM reserved at boot. The install image defaults to 10G; the ext4 filesystem is not automatically expanded to consume any additional space in a larger `userdata` partition.
 
 The image can be flashed without Android or adb. Enter fastboot with
 **power + volume-down**, or from the running Linux system write the standard
