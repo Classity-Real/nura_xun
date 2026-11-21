@@ -90,12 +90,21 @@ fi
 # Mount userdata directly as the persistent read-write root filesystem.
 # Keep NCM/Telnet alive across switch_root; only release the initramfs serial
 # shell so ttyGS0 getty in the new root can own the ACM console.
+#
+# V2: on a failed mount, run dumpe2fs -h and e2fsck -n against $root (both
+# read-only, no writes) and push their output through log() line by line,
+# so it lands straight on the console -- the one channel that's always
+# available even when the USB NCM/Telnet gadget itself isn't working at
+# this point in boot (seen as dwc3 "request ... was not queued to epNin"
+# failures right alongside the mount failure). No network/serial session
+# needed to get this diagnostic: it's captured in the same photo of the
+# console the mount failure itself was found in.
 python3 - "$INIT" <<'PYEOF'
 import sys
 path = sys.argv[1]
 with open(path) as f:
     text = f.read()
-marker = "# XUN_PERSISTENT_USERDATA_V1"
+marker = "# XUN_PERSISTENT_USERDATA_V2"
 if marker not in text:
     # The pinned upstream init may already have been locally modified in a
     # cached Actions workspace. Match the final root-switch block by its
@@ -106,7 +115,7 @@ if marker not in text:
     if begin < 0 or end < 0 or begin >= end:
         sys.exit("could not locate the root mount/switch block using its stable anchors in " + path)
     begin += 1
-    replacement = r'''# XUN_PERSISTENT_USERDATA_V1
+    replacement = r'''# XUN_PERSISTENT_USERDATA_V2
 if [ -n "$root" ]; then
     mkdir -p /newroot
     if mount -t ext4 -o rw,noatime "$root" /newroot; then
@@ -146,6 +155,17 @@ if [ -n "$root" ]; then
         fi
     else
         log "could not mount $root read-write"
+        if command -v e2fsck >/dev/null 2>&1 && command -v dumpe2fs >/dev/null 2>&1; then
+            log "running dumpe2fs -h and e2fsck -n on $root (read-only, no writes) for diagnostics"
+            dumpe2fs -h "$root" 2>&1 | while IFS= read -r dline; do
+                log "dumpe2fs: $dline"
+            done
+            e2fsck -n "$root" 2>&1 | head -n 100 | while IFS= read -r eline; do
+                log "e2fsck: $eline"
+            done
+        else
+            log "e2fsck/dumpe2fs not available in this initramfs; no on-console diagnostics"
+        fi
     fi
 fi
 '''
