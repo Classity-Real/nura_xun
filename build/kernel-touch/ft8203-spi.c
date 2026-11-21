@@ -463,10 +463,20 @@ static void ft8203_report(struct ft8203 *ts, const u8 *buf)
 
 		touch = true;
 		input_mt_report_slot_state(input, MT_TOOL_FINGER, true);
-		input_report_abs(input, ABS_MT_POSITION_X,
-				  x * 1200 / FT8203_RAW_WIDTH);
-		input_report_abs(input, ABS_MT_POSITION_Y,
-				  y * 1920 / FT8203_RAW_HEIGHT);
+		/*
+		 * The M84 panel is mounted portrait in the landscape chassis.
+		 * DRM reports panel_orientation=left_side_up, so rotate the
+		 * native portrait coordinates 90 degrees clockwise:
+		 *   landscape X = 1919 - portrait Y
+		 *   landscape Y = portrait X
+		 *
+		 * Scale first to the panel's native 1200x1920 grid, then
+		 * transform into the 1920x1200 landscape display space.
+		 */
+		x = x * 1200 / FT8203_RAW_WIDTH;
+		y = y * 1920 / FT8203_RAW_HEIGHT;
+		input_report_abs(input, ABS_MT_POSITION_X, 1919 - y);
+		input_report_abs(input, ABS_MT_POSITION_Y, x);
 	}
 
 	input_report_key(input, BTN_TOUCH, touch);
@@ -568,8 +578,9 @@ static int ft8203_probe(struct spi_device *spi)
 	input->id.bustype = BUS_SPI;
 	input->dev.parent = &spi->dev;
 
-	input_set_abs_params(input, ABS_MT_POSITION_X, 0, 1199, 0, 0);
-	input_set_abs_params(input, ABS_MT_POSITION_Y, 0, 1919, 0, 0);
+	/* Landscape coordinates after the left-side-up panel rotation. */
+	input_set_abs_params(input, ABS_MT_POSITION_X, 0, 1919, 0, 0);
+	input_set_abs_params(input, ABS_MT_POSITION_Y, 0, 1199, 0, 0);
 	input_set_capability(input, EV_KEY, BTN_TOUCH);
 
 	ret = input_mt_init_slots(input, FT8203_MAX_TOUCH,
