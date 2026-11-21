@@ -386,13 +386,37 @@ grep -q 'sm6225-xiaomi-xun.dtb' "$SRC/$DTS_DIR/Makefile" ||
 
 # --- initramfs ------------------------------------------------------------
 BUSYBOX=$ROOT/tools/bin/busybox.static
+# Filesystem recovery must be possible before switch_root: apk and the Alpine
+# rootfs do not exist yet in this BusyBox initramfs. Bundle static AArch64
+# e2fsprogs so e2fsck/dumpe2fs/tune2fs/debugfs are available at the recovery
+# shell even when userdata itself cannot be mounted.
+bash "$ROOT/build-e2fsprogs-initramfs.sh"
+E2FS_TOOLS=$ROOT/tools/e2fsprogs-initramfs
+[ -x "$E2FS_TOOLS/e2fsck" ] && [ -x "$E2FS_TOOLS/dumpe2fs" ] || {
+	echo "static e2fsprogs tools were not built" >&2
+	exit 1
+}
 cat >"$WORK/initramfs.list" <<EOF
 dir /bin 755 0 0
 file /bin/busybox $BUSYBOX 755 0 0
 file /init $ROOT/tapas-bringup/initramfs/init 755 0 0
 dir /dev 755 0 0
+dir /sbin 755 0 0
+dir /etc 755 0 0
 nod /dev/console 600 0 0 c 5 1
 EOF
+# Copy all static e2fsprogs executables and their mkfs/fsck aliases into the
+# early userspace. Keep mke2fs.conf beside them for correct ext4 defaults.
+for f in "$E2FS_TOOLS"/*; do
+	[ -e "$f" ] || [ -L "$f" ] || continue
+	name=${f##*/}
+	if [ -L "$f" ]; then
+		echo "slink /sbin/$name $(readlink "$f") 777 0 0" >>"$WORK/initramfs.list"
+	elif [ -f "$f" ]; then
+		echo "file /sbin/$name $f 755 0 0" >>"$WORK/initramfs.list"
+	fi
+done
+echo "file /etc/mke2fs.conf $E2FS_TOOLS/mke2fs.conf 644 0 0" >>"$WORK/initramfs.list"
 # The ADSP probes before the rootfs is mounted, so its firmware has to travel
 # in the initramfs (compressed inside the kernel image).
 FWROOT=$ROOT/firmware/qcom/sm6225/xiaomi/xun
