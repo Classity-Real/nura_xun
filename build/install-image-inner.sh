@@ -78,7 +78,8 @@ cat >"$ROOT/etc/hosts" <<'HOSTS'
 HOSTS
 printf 'nameserver 223.5.5.5\nnameserver 1.1.1.1\n' >"$ROOT/etc/resolv.conf"
 cat >"$ROOT/etc/fstab" <<'FSTAB'
-LABEL=tapas_root / ext4 defaults,noatime 0 1
+# Root is supplied by initramfs as read-only ext4 plus a RAM OverlayFS.
+# Do not remount the userdata partition read-write.
 FSTAB
 cat >"$ROOT/etc/locale.conf" <<'LOCALE'
 LANG=en_US.UTF-8

@@ -3,12 +3,11 @@ PATH=/sbin:/usr/sbin:/bin:/usr/bin
 export PATH
 # /sbin/init of the Alpine rootfs installed on the tablet.
 #
-# The init in the kernel initramfs unbinds the USB gadget before it switches
-# root and starts no userspace at all, so this script mounts what the desktop
-# needs, brings up udev (without it logind has no seat and mutter does not
-# start), puts the USB gadget back (serial console plus the ECM link the host
-# reaches 172.16.42.1 over) and then hands over to busybox init, which runs
-# /etc/inittab and the /etc/local.d/*.start scripts.
+# The initramfs keeps the USB NCM gadget and Telnet recovery connection alive
+# across switch_root. This script mounts what the desktop needs, brings up
+# udev (without it logind has no seat and mutter does not start), starts SSH,
+# and then hands over to busybox init, which runs /etc/inittab and the
+# /etc/local.d/*.start scripts.
 mountpoint -q /proc || mount -t proc proc /proc
 mountpoint -q /sys || mount -t sysfs sysfs /sys
 mountpoint -q /dev || mount -t devtmpfs devtmpfs /dev
@@ -26,33 +25,14 @@ if command -v udevd >/dev/null 2>&1; then
 	udevadm settle --timeout=30
 fi
 
-# The flashed image is smaller than the userdata partition. Grow the
-# filesystem once udev has created the by-label links; an already full
-# filesystem is left alone.
-if command -v resize2fs >/dev/null 2>&1; then
-	rootdev=$(awk '$2 == "/" { print $1; exit }' /proc/mounts)
-	case "$rootdev" in
-	/dev/root|"") rootdev=/dev/disk/by-label/tapas_root ;;
-	esac
-	resize2fs "$rootdev" >/dev/null 2>&1 || true
-fi
-
-# USB gadget: serial console on ttyGS0 and the ECM link to the host
-G=/sys/kernel/config/usb_gadget/g1
-if [ -d "$G" ]; then
-	udc=$(ls /sys/class/udc 2>/dev/null | head -n1)
-	if [ -n "$udc" ]; then
-		echo "" >"$G/UDC" 2>/dev/null
-		sleep 0.2
-		echo "$udc" >"$G/UDC"
-	fi
-	sleep 1
-fi
+# The initramfs already owns the NCM gadget and its udhcpd service.
+# Keep the link and address, but do not rebind the UDC or start a second DHCP
+# server from the rootfs; the existing Telnet session remains available.
 if [ -e /sys/class/net/usb0 ]; then
 	ip link set usb0 up 2>/dev/null
 	ip addr replace 172.16.42.1/24 dev usb0 2>/dev/null
-	/usr/sbin/dnsmasq --conf-file=/etc/dnsmasq-xun.conf
 fi
+
 if [ -x /usr/sbin/sshd ]; then
 	ssh-keygen -A 2>/dev/null
 	mkdir -p /run/sshd

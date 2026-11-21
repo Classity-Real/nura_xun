@@ -87,6 +87,83 @@ PYEOF
 	}
 fi
 
+# Replace the upstream read-write root mount with a read-only ext4
+# lower layer and a RAM-backed OverlayFS. Keep NCM/Telnet alive across
+# switch_root; only release the initramfs serial shell so ttyGS0 getty
+# in the new root can own the ACM console.
+python3 - "$INIT" <<'PYEOF'
+import sys
+path = sys.argv[1]
+with open(path) as f:
+    text = f.read()
+marker = "# XUN_RAM_OVERLAY_V1"
+if marker not in text:
+    start = 'if [ -n "$root" ] && mount -t ext4 -o rw,noatime "$root" /newroot; then'
+    end_marker = '\nlog "staying in the bring-up shell"'
+    begin = text.find(start)
+    end = text.find(end_marker, begin)
+    if begin < 0 or end < 0:
+        sys.exit("could not locate the original root mount/switch block in " + path)
+    replacement = r'''# XUN_RAM_OVERLAY_V1
+if [ -n "$root" ]; then
+    mkdir -p /lower /overlay /newroot
+    if mount -t ext4 -o ro,norecovery,noatime "$root" /lower; then
+        if mount -t tmpfs -o size=512M,mode=0755,nosuid,nodev tmpfs /overlay &&
+           mkdir -p /overlay/upper /overlay/work &&
+           mount -t overlay overlay -o lowerdir=/lower,upperdir=/overlay/upper,workdir=/overlay/work /newroot; then
+            init=
+            for i in /sbin/init /usr/lib/systemd/systemd; do
+                if [ -x "/newroot$i" ] || [ -L "/newroot$i" ]; then
+                    init=$i
+                    break
+                fi
+            done
+            if [ -n "$init" ]; then
+                log "root filesystem on $root is read-only with a 512 MiB RAM overlay; starting $init in 10 s (run 'stay' on USB serial to stop)"
+                sleep 10
+                if [ ! -e /tmp/stay ]; then
+                    mkdir -p /newroot/.initramfs/lower /newroot/.initramfs/overlay \
+                        /newroot/tmp /newroot/dev /newroot/proc /newroot/sys
+                    moves_ok=1
+                    if [ -n "$sd" ]; then
+                        mkdir -p /newroot/mnt/sdcard
+                        mount --move /sd /newroot/mnt/sdcard || moves_ok=0
+                    fi
+                    # The lower and upper backing mounts must survive removal
+                    # of the initramfs root, so carry them under the new root.
+                    mount --move /lower /newroot/.initramfs/lower || moves_ok=0
+                    mount --move /overlay /newroot/.initramfs/overlay || moves_ok=0
+                    # Keep /tmp (including udhcpd's lease file) and the USB
+                    # gadget's sysfs/configfs mounts alive after the pivot.
+                    mount --move /tmp /newroot/tmp || moves_ok=0
+                    mount --move /proc /newroot/proc || moves_ok=0
+                    mount --move /sys /newroot/sys || moves_ok=0
+                    # Let the new root's ttyGS0 getty own the serial console.
+                    if [ -n "$shell_loop" ]; then
+                        pkill -P "$shell_loop"
+                        kill "$shell_loop"
+                    fi
+                    mount --move /dev /newroot/dev || moves_ok=0
+                    if [ "$moves_ok" -eq 1 ]; then
+                        exec switch_root /newroot "$init"
+                    fi
+                    log "could not move all initramfs mounts; staying in recovery shell"
+                fi
+            else
+                log "$root has no init"
+            fi
+        else
+            log "could not create RAM OverlayFS for $root"
+        fi
+    else
+        log "could not mount $root read-only with norecovery"
+    fi
+fi
+'''
+    text = text[:begin] + replacement + text[end:]
+    with open(path, "w") as f:
+        f.write(text)
+
 # --- patches -------------------------------------------------------------
 if [ ! -e "$WORK/.patched" ]; then
 	for c in 650f459d 8b6545f7 f5a976a8 e127de2a; do
