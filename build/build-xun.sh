@@ -109,7 +109,10 @@ if [ -n "$root" ]; then
     mkdir -p /lower /overlay /newroot
     if mount -t ext4 -o ro,norecovery,noatime "$root" /lower; then
         if mount -t tmpfs -o size=512M,mode=0755,nosuid,nodev tmpfs /overlay &&
-           mkdir -p /overlay/upper /overlay/work &&
+           mkdir -p /overlay/upper/sbin /overlay/upper/etc /overlay/work &&
+           cat /xun-rootfs-init > /overlay/upper/sbin/init &&
+           chmod 755 /overlay/upper/sbin/init &&
+           cat /xun-fstab > /overlay/upper/etc/fstab &&
            mount -t overlay overlay -o lowerdir=/lower,upperdir=/overlay/upper,workdir=/overlay/work /newroot; then
             init=
             for i in /sbin/init /usr/lib/systemd/systemd; do
@@ -399,10 +402,18 @@ grep -q 'sm6225-xiaomi-xun.dtb' "$SRC/$DTS_DIR/Makefile" ||
 
 # --- initramfs ------------------------------------------------------------
 BUSYBOX=$ROOT/tools/bin/busybox.static
+# These two files are injected into OverlayFS upperdir at boot. This lets the
+# boot image replace the old rootfs init/fstab without writing userdata.
+cat >"$WORK/fstab.overlay" <<'EOF_FSTAB'
+# Root is mounted by initramfs as read-only ext4 plus a RAM OverlayFS.
+# Do not remount the userdata partition read-write.
+EOF_FSTAB
 cat >"$WORK/initramfs.list" <<EOF
 dir /bin 755 0 0
 file /bin/busybox $BUSYBOX 755 0 0
 file /init $ROOT/tapas-bringup/initramfs/init 755 0 0
+file /xun-rootfs-init $ROOT/rootfs-init.sh 755 0 0
+file /xun-fstab $WORK/fstab.overlay 644 0 0
 dir /dev 755 0 0
 nod /dev/console 600 0 0 c 5 1
 EOF
