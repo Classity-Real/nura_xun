@@ -43,7 +43,8 @@ for b in gnome-session gnome-shell; do
 	fi
 done
 cp -a "$BASE/device/." "$ROOT/"
-chmod 755 "$ROOT"/etc/local.d/*.start "$ROOT"/usr/local/bin/time-sync \
+chmod 755 "$ROOT"/etc/local.d/*.start "$ROOT"/etc/local.d/*.stop \
+	"$ROOT"/usr/local/bin/time-sync \
 	"$ROOT"/usr/libexec/elogind/system-sleep/*.sh
 
 mkdir -p "$ROOT/usr/share/alsa/ucm2"
