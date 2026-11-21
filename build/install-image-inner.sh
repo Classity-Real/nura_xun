@@ -173,8 +173,20 @@ grep -q '^PasswordAuthentication' "$SSHD" || echo 'PasswordAuthentication yes' >
 # --- boot services -------------------------------------------------------
 # Keep the proven runlevel from the bring-up rootfs; the GDM start lives in
 # local.d/50-gnome.start so it runs after dbus, elogind and polkit.
+#
+# sshd is deliberately NOT in this list: rootfs-init.sh (our /sbin/init
+# replacement) already starts /usr/sbin/sshd directly and persistently
+# before handing off to this OpenRC boot, specifically so the recovery/
+# telnet-adjacent SSH session survives switch_root even if something later
+# in boot fails. If OpenRC's own sshd service is also enabled here, it
+# tries to start a second instance once it reaches the default runlevel,
+# start-stop-daemon finds one already running, and OpenRC logs it as a
+# failed service ("Failed to start sshd" / "ERROR: sshd failed to start")
+# even though SSH access itself is fine. Enabling it here would just add a
+# second, OpenRC-supervised sshd that conflicts with the one already owned
+# by rootfs-init.sh.
 for s in dbus elogind polkit local networkmanager bluetooth crond \
-	udev-postmount sshd chronyd; do
+	udev-postmount chronyd; do
 	[ -x "$ROOT/etc/init.d/$s" ] || { echo "missing init script: $s" >&2; continue; }
 	ln -sf "/etc/init.d/$s" "$ROOT/etc/runlevels/default/$s"
 done
