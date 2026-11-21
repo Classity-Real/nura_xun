@@ -87,16 +87,15 @@ PYEOF
 	}
 fi
 
-# Replace the upstream read-write root mount with a read-only ext4
-# lower layer and a RAM-backed OverlayFS. Keep NCM/Telnet alive across
-# switch_root; only release the initramfs serial shell so ttyGS0 getty
-# in the new root can own the ACM console.
+# Mount userdata directly as the persistent read-write root filesystem.
+# Keep NCM/Telnet alive across switch_root; only release the initramfs serial
+# shell so ttyGS0 getty in the new root can own the ACM console.
 python3 - "$INIT" <<'PYEOF'
 import sys
 path = sys.argv[1]
 with open(path) as f:
     text = f.read()
-marker = "# XUN_RAM_OVERLAY_V1"
+marker = "# XUN_PERSISTENT_USERDATA_V1"
 if marker not in text:
     start = 'if [ -n "$root" ] && mount -t ext4 -o rw,noatime "$root" /newroot; then'
     end_marker = '\nlog "staying in the bring-up shell"'
@@ -397,8 +396,6 @@ cat >"$WORK/initramfs.list" <<EOF
 dir /bin 755 0 0
 file /bin/busybox $BUSYBOX 755 0 0
 file /init $ROOT/tapas-bringup/initramfs/init 755 0 0
-file /xun-rootfs-init $ROOT/rootfs-init.sh 755 0 0
-file /xun-fstab $WORK/fstab.overlay 644 0 0
 dir /dev 755 0 0
 nod /dev/console 600 0 0 c 5 1
 EOF
