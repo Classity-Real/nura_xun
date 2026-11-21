@@ -1,35 +1,62 @@
 #!/bin/sh
-# Keep the USB gadget usable across cable unplug/replug.
-#
-# The dwc3 gadget does not always re-arm its pull-up after the cable has been
-# removed while Linux is running; the host then sees no new USB device even
-# though the tablet is alive.  Watch the UDC state and rebound it after a few
-# seconds without a configured link.  Re-apply the ECM address and DHCP
-# server as well, because usb0 may be recreated by the rebind.
+# Keep the USB CDC-NCM gadget usable across cable unplug/replug and UDC resets.
+# The initramfs creates usb0 and starts udhcpd. rootfs-init.sh transfers DHCP
+# ownership to dnsmasq after switch_root; this watchdog repairs the interface
+# address whenever it appears and restarts DHCP after a UDC rebind.
+G=/sys/kernel/config/usb_gadget/g1
+CONF=/etc/dnsmasq-xun.conf
+
+ensure_usb_network() {
+	[ -e /sys/class/net/usb0 ] || return 1
+	ip link set dev usb0 up 2>/dev/null || return 1
+	ip addr replace 172.16.42.1/24 dev usb0 2>/dev/null || return 1
+	if ! pgrep -x dnsmasq >/dev/null 2>&1; then
+		[ -x /usr/sbin/dnsmasq ] || return 1
+		/usr/sbin/dnsmasq --conf-file="$CONF" 2>/dev/null || return 1
+	fi
+	return 0
+}
+
+restart_usb_dhcp() {
+	# A UDC rebind can recreate usb0 with a new ifindex. Restart dnsmasq so
+	# its DHCP socket is attached to the current interface instance.
+	pkill -x dnsmasq 2>/dev/null || true
+	for _ in 1 2 3 4 5 6 7 8 9 10; do
+		if ensure_usb_network; then
+			echo "xun-usb: NCM network restored on usb0" >/dev/kmsg
+			return 0
+		fi
+		sleep 0.2
+	done
+	echo "xun-usb: UDC rebound but usb0/DHCP did not recover" >/dev/kmsg
+	return 1
+}
+
 (
+	miss=0
 	while :; do
 		sleep 2
-
 		udc=$(ls /sys/class/udc 2>/dev/null | head -n1)
 		[ -n "$udc" ] || continue
 		state=$(cat "/sys/class/udc/$udc/state" 2>/dev/null)
-		[ "$state" = "configured" ] && { miss=0; continue; }
 
-		miss=$(( ${miss:-0} + 1 ))
+		if [ "$state" = "configured" ]; then
+			miss=0
+			# Do not trust UDC state alone: configured USB can coexist with a
+			# missing usb0 address. Repair it without needlessly rebinding.
+			ensure_usb_network || true
+			continue
+		fi
+
+		miss=$((miss + 1))
 		[ "$miss" -lt 3 ] && continue
 		miss=0
-
-		G=/sys/kernel/config/usb_gadget/g1
 		[ -d "$G" ] || continue
+
+		echo "xun-usb: UDC $udc state '$state'; rebinding gadget" >/dev/kmsg
 		echo "" >"$G/UDC" 2>/dev/null
 		sleep 0.2
 		echo "$udc" >"$G/UDC" 2>/dev/null
-
-		if [ -e /sys/class/net/usb0 ]; then
-			ip link set usb0 up 2>/dev/null
-			ip addr replace 172.16.42.1/24 dev usb0 2>/dev/null
-			pkill -x dnsmasq 2>/dev/null
-			/usr/sbin/dnsmasq --conf-file=/etc/dnsmasq-xun.conf 2>/dev/null
-		fi
+		restart_usb_dhcp
 	done
 ) &
