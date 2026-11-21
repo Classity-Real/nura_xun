@@ -386,12 +386,6 @@ grep -q 'sm6225-xiaomi-xun.dtb' "$SRC/$DTS_DIR/Makefile" ||
 
 # --- initramfs ------------------------------------------------------------
 BUSYBOX=$ROOT/tools/bin/busybox.static
-# These two files are injected into OverlayFS upperdir at boot. This lets the
-# boot image replace the old rootfs init/fstab without writing userdata.
-cat >"$WORK/fstab.overlay" <<'EOF_FSTAB'
-# The userdata ext4 partition is the persistent, read-write root filesystem.
-# /tmp, /var/tmp, /run and /dev/shm are volatile tmpfs mounts.
-EOF_FSTAB
 cat >"$WORK/initramfs.list" <<EOF
 dir /bin 755 0 0
 file /bin/busybox $BUSYBOX 755 0 0
