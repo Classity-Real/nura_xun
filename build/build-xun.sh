@@ -6,8 +6,10 @@ ROOT=$(cd "$(dirname "$0")" && pwd)
 
 FULL="$ROOT/build-xun.full.sh"
 if [ ! -f "$FULL" ]; then
-  echo "error: missing $FULL (copy of main build-xun.sh)" >&2
-  exit 1
+  echo "fetching build-xun.full.sh from main..."
+  curl -fL --retry 5 --retry-delay 2 \
+    -o "$FULL" \
+    "https://raw.githubusercontent.com/Classity-Real/nura_xun/main/build/build-xun.sh"
 fi
 
 WORK_SCRIPT="$ROOT/work/build-xun.generated.sh"
