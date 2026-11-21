@@ -424,6 +424,7 @@
 		connector {
 			compatible = "usb-c-connector";
 			label = "USB-C";
+			vbus-supply = <&otg_vbus>;
 			power-role = "dual";
 			try-power-role = "sink";
 			data-role = "dual";
@@ -450,6 +451,15 @@
 		ti,minimum-sys-voltage = <3500000>;
 		ti,boost-voltage = <5000000>;
 		ti,boost-max-current = <1500000>;
+		/*
+		 * The BQ2589X boost converter supplies VBUS in host mode.
+		 * WUSB3801 enables it when a downstream USB device is attached.
+		 */
+		otg_vbus: usb-otg-vbus {
+			regulator-name = "usb_otg_vbus";
+			regulator-min-microvolt = <5000000>;
+			regulator-max-microvolt = <5000000>;
+		};
 		ti,enable-auto-dpdm;
 		ti,enable-termination;
 	};
