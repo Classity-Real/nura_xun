@@ -452,6 +452,8 @@
 		ti,minimum-sys-voltage = <3500000>;
 		ti,boost-voltage = <5000000>;
 		ti,boost-max-current = <1500000>;
+		ti,enable-auto-dpdm;
+		ti,enable-termination;
 		/*
 		 * The BQ2589X boost converter supplies VBUS in host mode.
 		 * WUSB3801 enables it when a downstream USB device is attached.
@@ -461,8 +463,6 @@
 			regulator-min-microvolt = <5000000>;
 			regulator-max-microvolt = <5000000>;
 		};
-		ti,enable-auto-dpdm;
-		ti,enable-termination;
 	};
 };
 
