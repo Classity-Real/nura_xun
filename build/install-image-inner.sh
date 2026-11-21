@@ -218,7 +218,16 @@ chown -R root:root "$ROOT/lib/firmware"
 if [ -n "${IMG:-}" ]; then
 	rm -f "$IMG"
 	truncate -s "${SIZE:-10G}" "$IMG"
-	mke2fs -q -t ext4 -L tapas_root -E root_owner=0:0 -d "$ROOT" -F "$IMG"
+	# lazy_itable_init/lazy_journal_init (mke2fs's default for ext4) leave
+	# the inode table and journal superblock not actually written -- a real
+	# block device's kernel driver finishes that lazily on first mount via
+	# a background thread. This kernel's jbd2 doesn't do that: the journal
+	# superblock here is just zero bytes, read back as "no valid journal
+	# superblock found" at mount time, even though e2fsck -fn right after
+	# mke2fs sees it as a normal pending-lazy-init filesystem, not damage.
+	# Force both to be written for real at build time instead.
+	mke2fs -q -t ext4 -L tapas_root -E root_owner=0:0,lazy_itable_init=0,lazy_journal_init=0 \
+		-d "$ROOT" -F "$IMG"
 	# Catch a bad build (e.g. a corrupted journal) right here, before it
 	# ever reaches a device: a filesystem image that fails its own fsck
 	# immediately after creation means the bug is in this build step, not
