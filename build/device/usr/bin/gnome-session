@@ -1,24 +1,21 @@
 #!/bin/sh
 [ -n "$XDG_RUNTIME_DIR" ] || export XDG_RUNTIME_DIR=/run/user/$(id -u)
-export LANG=zh_CN.UTF-8
-export LC_ALL=zh_CN.UTF-8
-export LANGUAGE=zh_CN:zh
-export GTK_IM_MODULE=ibus
-export QT_IM_MODULE=ibus
-export XMODIFIERS=@im=ibus
-# An old user dconf database can pin the input sources to the US layout;
-# make sure the pinyin engine is present before GNOME starts.
+
+# Keep the desktop locale English regardless of the build host or old rootfs
+# locale defaults. Leave LC_ALL unset so individual locale categories work.
+export LANG=en_US.UTF-8
+export LANGUAGE=en
+unset LC_ALL
+
+# Use the US keyboard layout; do not force the Chinese Pinyin input method.
+export GTK_IM_MODULE=
+export QT_IM_MODULE=
+export XMODIFIERS=
+
 if command -v gsettings >/dev/null 2>&1; then
-	current=$(gsettings get org.gnome.desktop.input-sources sources 2>/dev/null)
-	case "$current" in
-	*libpinyin*) ;;
-	*)
-		gsettings set org.gnome.desktop.input-sources sources \
-			"[('xkb', 'us'), ('ibus', 'libpinyin')]" 2>/dev/null || true
-		gsettings set org.gnome.desktop.input-sources mru-sources \
-			"[('ibus', 'libpinyin'), ('xkb', 'us')]" 2>/dev/null || true
-		;;
-	esac
+	gsettings set org.gnome.desktop.input-sources sources "[('xkb', 'us')]" 2>/dev/null || true
+	gsettings set org.gnome.desktop.input-sources mru-sources "[('xkb', 'us')]" 2>/dev/null || true
 fi
+
 export XDG_SESSION_TYPE=${XDG_SESSION_TYPE:-wayland}
 exec /usr/bin/gnome-session.real "$@" >>/tmp/session.log 2>&1
