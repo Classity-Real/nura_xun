@@ -50,10 +50,12 @@
 		ranges;
 		stdout-path = "framebuffer0";
 		/*
-		 * The panel is mounted upside down in the tablet shell; the
-		 * kernel cmdline given by the shim comes from here.
+		 * The native 1200x1920 panel is mounted in portrait orientation
+		 * inside the tablet's landscape chassis. Report the panel's
+		 * left-side-up mounting so Mutter starts in landscape and applies
+		 * the matching input transform to the touchscreen.
 		 */
-		bootargs = "console=tty0 consoleblank=0 loglevel=7 printk.devkmsg=on log_buf_len=2M clk_ignore_unused pd_ignore_unused fw_devlink=off deferred_probe_timeout=120 rcupdate.rcu_cpu_stall_suppress=1 video=DSI-1:panel_orientation=upside_down";
+		bootargs = "console=tty0 consoleblank=0 loglevel=7 printk.devkmsg=on log_buf_len=2M clk_ignore_unused pd_ignore_unused fw_devlink=off deferred_probe_timeout=120 rcupdate.rcu_cpu_stall_suppress=1 video=DSI-1:panel_orientation=left_side_up";
 
 		/* 1200x1920, 32 bpp: the splash buffer ABL scans out */
 		framebuffer0: framebuffer@5c000000 {
