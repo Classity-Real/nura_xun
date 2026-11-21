@@ -219,6 +219,15 @@ if [ -n "${IMG:-}" ]; then
 	rm -f "$IMG"
 	truncate -s "${SIZE:-10G}" "$IMG"
 	mke2fs -q -t ext4 -L tapas_root -E root_owner=0:0 -d "$ROOT" -F "$IMG"
+	# Catch a bad build (e.g. a corrupted journal) right here, before it
+	# ever reaches a device: a filesystem image that fails its own fsck
+	# immediately after creation means the bug is in this build step, not
+	# in a later download or fastboot transfer.
+	e2fsck -fn "$IMG" || {
+		echo "mke2fs just produced a filesystem that fails e2fsck -- not a download/flash problem, the image build itself is broken" >&2
+		exit 1
+	}
+	sha256sum "$IMG"
 	chown "$HOST_UID:$HOST_GID" "$IMG"
 fi
 

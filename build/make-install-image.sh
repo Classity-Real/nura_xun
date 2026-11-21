@@ -32,3 +32,7 @@ docker run --rm --platform linux/arm64 \
 img2simg "$IMG" "$IMG.sparse"
 chown "$(id -u):$(id -g)" "$IMG.sparse"
 echo "image: $IMG ($(du -h "$IMG" | cut -f1) on disk, sparse $IMG.sparse $(du -h "$IMG.sparse" | cut -f1))"
+# Printed so a download can be checked against this before flashing a
+# multi-GB transfer over USB -- a mismatch here means the corruption is in
+# the download, not the build.
+sha256sum "$IMG.sparse"
