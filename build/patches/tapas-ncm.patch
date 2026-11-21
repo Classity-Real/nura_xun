@@ -1,16 +1,16 @@
 --- a/initramfs/init
 +++ b/initramfs/init
-@@ -12,7 +12,7 @@
+@@ -12,3 +12,3 @@
 -# The same USB gadget is also an ECM network card (the tablet used as host
+-# has cdc_ether but no cdc_acm): the phone is 172.16.42.1, hands out
 +# The same USB gadget is also an NCM network card (Windows 11 has an in-box
- # has cdc_ether but no cdc_acm): the phone is 172.16.42.1, hands out
-@@ -103,8 +103,8 @@
- 	udc=$(ls /sys/class/udc | head -n 1)
++# NCM driver): the phone is 172.16.42.1, hands out
+@@ -103,7 +103,7 @@
  	[ -n "$udc" ] || return 1
  	mkdir -p "$G/strings/0x409" "$G/configs/c.1/strings/0x409" \
 -		"$G/functions/ecm.usb0" "$G/functions/acm.usb0"
 +		"$G/functions/ncm.usb0" "$G/functions/acm.usb0"
-@@ -112,11 +112,11 @@
+@@ -112,10 +112,10 @@
 -	echo ECM+ACM >"$G/configs/c.1/strings/0x409/configuration"
 +	echo NCM+ACM >"$G/configs/c.1/strings/0x409/configuration"
  	# Fixed addresses, so the host keeps the same interface name
@@ -20,6 +20,6 @@
 +	echo 02:7a:70:61:73:01 >"$G/functions/ncm.usb0/dev_addr"
 +	echo 02:7a:70:61:73:02 >"$G/functions/ncm.usb0/host_addr"
 +	ln -sfn "$G/functions/ncm.usb0" "$G/configs/c.1/ncm.usb0"
-@@ -131,7 +131,7 @@
-- 	ifname=$(cat "$G/functions/ecm.usb0/ifname" 2>/dev/null)
+@@ -131,1 +131,1 @@
+-	ifname=$(cat "$G/functions/ecm.usb0/ifname" 2>/dev/null)
 +	ifname=$(cat "$G/functions/ncm.usb0/ifname" 2>/dev/null)
