@@ -50,7 +50,28 @@ fetch "$KERNEL_URL" "$SRC/linux-$KERNEL.tar.xz"
 
 for sha in $SM6225_COMMITS; do
 	short=${sha:0:8}
-	fetch "$SM6225_URL/-/commit/$sha.patch" "$SRC/patches/$short.patch"
+	patch_file=$SRC/patches/$short.patch
+	patch_url=$SM6225_URL/-/commit/$sha.patch
+
+	# The Actions cache can preserve a non-empty error page or truncated
+	# response. A non-empty file is not necessarily a usable patch.
+	if [ -s "$patch_file" ] && grep -q '^diff --git ' "$patch_file"; then
+		continue
+	fi
+
+	rm -f "$patch_file"
+	tmp_file=$patch_file.tmp
+	rm -f "$tmp_file"
+	echo "fetch and validate patch $short"
+	curl -fL --retry 5 --retry-delay 3 -o "$tmp_file" "$patch_url"
+	if ! grep -q '^diff --git ' "$tmp_file"; then
+		echo "invalid patch downloaded for $sha from $patch_url" >&2
+		echo "response preview:" >&2
+		head -n 5 "$tmp_file" >&2 || true
+		rm -f "$tmp_file"
+		exit 1
+	fi
+	mv "$tmp_file" "$patch_file"
 done
 
 if [ ! -f "$ROOT/tapas-bringup/config/base.config" ]; then
