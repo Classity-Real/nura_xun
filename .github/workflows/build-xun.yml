@@ -46,7 +46,8 @@ jobs:
             libssl-dev libelf-dev \
             clang lld llvm \
             python3 cpio \
-            gcc-aarch64-linux-gnu binutils
+            gcc-aarch64-linux-gnu binutils-aarch64-linux-gnu \\
+            libc6-dev-arm64-cross
 
       - name: Fetch sources
         working-directory: build
