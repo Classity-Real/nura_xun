@@ -89,7 +89,7 @@ jobs:
           compression-level: 0
 
   install-image:
-    if: ${{ github.event_name != 'workflow_dispatch' || inputs.target == 'userdata' || inputs.target == 'both' }}
+    if: ${{ github.event_name == 'workflow_dispatch' && (inputs.target == 'userdata' || inputs.target == 'both') }}
     runs-on: namespace-profile-workshop
     steps:
       - name: Checkout
