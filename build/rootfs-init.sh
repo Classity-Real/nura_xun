@@ -15,8 +15,14 @@ mkdir -p /sys/kernel/config /dev/pts /var/log /var/lib/misc /run
 mountpoint -q /sys/kernel/config || mount -t configfs configfs /sys/kernel/config
 mountpoint -q /dev/pts || mount -t devpts devpts /dev/pts
 # elogind, GDM and dbus want a writable /run
-mountpoint -q /run || mount -t tmpfs -o mode=0755,nosuid,nodev tmpfs /run
+mountpoint -q /run || mount -t tmpfs -o size=128M,mode=0755,nosuid,nodev tmpfs /run
 mkdir -p /run/systemd/seats /run/user
+
+# Keep transient files in RAM while the userdata-backed root stays persistent.
+mkdir -p /tmp /var/tmp /dev/shm
+mountpoint -q /tmp || mount -t tmpfs -o size=384M,mode=1777,nosuid,nodev tmpfs /tmp
+mountpoint -q /var/tmp || mount -t tmpfs -o size=128M,mode=1777,nosuid,nodev tmpfs /var/tmp
+mountpoint -q /dev/shm || mount -t tmpfs -o size=128M,mode=1777,nosuid,nodev tmpfs /dev/shm
 
 # udev: devtmpfs only creates the nodes, the seat devices have to be coldplugged
 if command -v udevd >/dev/null 2>&1; then

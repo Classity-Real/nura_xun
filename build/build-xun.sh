@@ -87,16 +87,15 @@ PYEOF
 	}
 fi
 
-# Replace the upstream read-write root mount with a read-only ext4
-# lower layer and a RAM-backed OverlayFS. Keep NCM/Telnet alive across
-# switch_root; only release the initramfs serial shell so ttyGS0 getty
-# in the new root can own the ACM console.
+# Mount userdata directly as the persistent read-write root filesystem.
+# Keep NCM/Telnet alive across switch_root; only release the initramfs serial
+# shell so ttyGS0 getty in the new root can own the ACM console.
 python3 - "$INIT" <<'PYEOF'
 import sys
 path = sys.argv[1]
 with open(path) as f:
     text = f.read()
-marker = "# XUN_RAM_OVERLAY_V1"
+marker = "# XUN_PERSISTENT_USERDATA_V1"
 if marker not in text:
     start = 'if [ -n "$root" ] && mount -t ext4 -o rw,noatime "$root" /newroot; then'
     end_marker = '\nlog "staying in the bring-up shell"'
@@ -104,62 +103,46 @@ if marker not in text:
     end = text.find(end_marker, begin)
     if begin < 0 or end < 0:
         sys.exit("could not locate the original root mount/switch block in " + path)
-    replacement = r'''# XUN_RAM_OVERLAY_V1
+    replacement = r'''# XUN_PERSISTENT_USERDATA_V1
 if [ -n "$root" ]; then
-    mkdir -p /lower /overlay /newroot
-    if mount -t ext4 -o ro,norecovery,noatime "$root" /lower; then
-        if mount -t tmpfs -o size=512M,mode=0755,nosuid,nodev tmpfs /overlay &&
-           mkdir -p /overlay/upper/sbin /overlay/upper/etc /overlay/work &&
-           cat /xun-rootfs-init > /overlay/upper/sbin/init &&
-           chmod 755 /overlay/upper/sbin/init &&
-           cat /xun-fstab > /overlay/upper/etc/fstab &&
-           mount -t overlay overlay -o lowerdir=/lower,upperdir=/overlay/upper,workdir=/overlay/work /newroot; then
-            init=
-            for i in /sbin/init /usr/lib/systemd/systemd; do
-                if [ -x "/newroot$i" ] || [ -L "/newroot$i" ]; then
-                    init=$i
-                    break
+    mkdir -p /newroot
+    if mount -t ext4 -o rw,noatime "$root" /newroot; then
+        init=
+        for i in /sbin/init /usr/lib/systemd/systemd; do
+            if [ -x "/newroot$i" ] || [ -L "/newroot$i" ]; then
+                init=$i
+                break
+            fi
+        done
+        if [ -n "$init" ]; then
+            log "root filesystem on $root is mounted read-write for persistent system and user data; /tmp and /run will use RAM; starting $init in 10 s (run 'stay' on USB serial to stop)"
+            sleep 10
+            if [ ! -e /tmp/stay ]; then
+                mkdir -p /newroot/tmp /newroot/dev /newroot/proc /newroot/sys
+                moves_ok=1
+                if [ -n "$sd" ]; then
+                    mkdir -p /newroot/mnt/sdcard
+                    mount --move /sd /newroot/mnt/sdcard || moves_ok=0
                 fi
-            done
-            if [ -n "$init" ]; then
-                log "root filesystem on $root is read-only with a 512 MiB RAM overlay; starting $init in 10 s (run 'stay' on USB serial to stop)"
-                sleep 10
-                if [ ! -e /tmp/stay ]; then
-                    mkdir -p /newroot/.initramfs/lower /newroot/.initramfs/overlay \
-                        /newroot/tmp /newroot/dev /newroot/proc /newroot/sys
-                    moves_ok=1
-                    if [ -n "$sd" ]; then
-                        mkdir -p /newroot/mnt/sdcard
-                        mount --move /sd /newroot/mnt/sdcard || moves_ok=0
-                    fi
-                    # The lower and upper backing mounts must survive removal
-                    # of the initramfs root, so carry them under the new root.
-                    mount --move /lower /newroot/.initramfs/lower || moves_ok=0
-                    mount --move /overlay /newroot/.initramfs/overlay || moves_ok=0
-                    # Keep /tmp (including udhcpd's lease file) and the USB
-                    # gadget's sysfs/configfs mounts alive after the pivot.
-                    mount --move /tmp /newroot/tmp || moves_ok=0
-                    mount --move /proc /newroot/proc || moves_ok=0
-                    mount --move /sys /newroot/sys || moves_ok=0
-                    # Let the new root's ttyGS0 getty own the serial console.
-                    if [ -n "$shell_loop" ]; then
-                        pkill -P "$shell_loop"
-                        kill "$shell_loop"
-                    fi
-                    mount --move /dev /newroot/dev || moves_ok=0
-                    if [ "$moves_ok" -eq 1 ]; then
-                        exec switch_root /newroot "$init"
-                    fi
-                    log "could not move all initramfs mounts; staying in recovery shell"
+                # Preserve initramfs services and hand their mounts to the new root.
+                mount --move /tmp /newroot/tmp || moves_ok=0
+                mount --move /proc /newroot/proc || moves_ok=0
+                mount --move /sys /newroot/sys || moves_ok=0
+                if [ -n "$shell_loop" ]; then
+                    pkill -P "$shell_loop"
+                    kill "$shell_loop"
                 fi
-            else
-                log "$root has no init"
+                mount --move /dev /newroot/dev || moves_ok=0
+                if [ "$moves_ok" -eq 1 ]; then
+                    exec switch_root /newroot "$init"
+                fi
+                log "could not move all initramfs mounts; staying in recovery shell"
             fi
         else
-            log "could not create RAM OverlayFS for $root"
+            log "$root has no init"
         fi
     else
-        log "could not mount $root read-only with norecovery"
+        log "could not mount $root read-write"
     fi
 fi
 '''
@@ -403,18 +386,10 @@ grep -q 'sm6225-xiaomi-xun.dtb' "$SRC/$DTS_DIR/Makefile" ||
 
 # --- initramfs ------------------------------------------------------------
 BUSYBOX=$ROOT/tools/bin/busybox.static
-# These two files are injected into OverlayFS upperdir at boot. This lets the
-# boot image replace the old rootfs init/fstab without writing userdata.
-cat >"$WORK/fstab.overlay" <<'EOF_FSTAB'
-# Root is mounted by initramfs as read-only ext4 plus a RAM OverlayFS.
-# Do not remount the userdata partition read-write.
-EOF_FSTAB
 cat >"$WORK/initramfs.list" <<EOF
 dir /bin 755 0 0
 file /bin/busybox $BUSYBOX 755 0 0
 file /init $ROOT/tapas-bringup/initramfs/init 755 0 0
-file /xun-rootfs-init $ROOT/rootfs-init.sh 755 0 0
-file /xun-fstab $WORK/fstab.overlay 644 0 0
 dir /dev 755 0 0
 nod /dev/console 600 0 0 c 5 1
 EOF
