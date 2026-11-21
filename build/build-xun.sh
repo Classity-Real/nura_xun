@@ -25,6 +25,56 @@ mkdir -p "$WORK" "$OUT"
 	exit 1
 }
 
+# tapas-bringup's find_root() only accepts a partition whose ext4 superblock
+# is labelled "tapas_root", found by scanning every block device. On xun the
+# install image always lands on the "userdata" partition instead (it's not
+# A/B-slotted, so it's the natural place for it), and relying purely on the
+# mke2fs -L label surviving img2simg/fastboot/flashing intact is one more
+# thing that can silently go wrong. Add a fallback: if nothing is found by
+# label, accept the partition whose PARTNAME is literally "userdata" (the
+# same uevent field the block-device listing just above this already reads)
+# as long as it's actually ext4-formatted, regardless of its label.
+INIT=$ROOT/tapas-bringup/initramfs/init
+if ! grep -q 'PARTNAME.*userdata' "$INIT" 2>/dev/null; then
+	python3 - "$INIT" <<'PYEOF'
+import sys
+path = sys.argv[1]
+with open(path) as f:
+	text = f.read()
+old = '''find_root() {
+	for b in /sys/class/block/*; do
+		[ -b "/dev/${b##*/}" ] && [ "$(ext4_label "/dev/${b##*/}")" = tapas_root ] &&
+			root=/dev/${b##*/} && return 0
+	done
+	return 1
+}'''
+new = '''find_root() {
+	for b in /sys/class/block/*; do
+		[ -b "/dev/${b##*/}" ] && [ "$(ext4_label "/dev/${b##*/}")" = tapas_root ] &&
+			root=/dev/${b##*/} && return 0
+	done
+	# xun: the install image always lands on the "userdata" partition --
+	# fall back to it directly by PARTNAME if nothing was found by label.
+	for b in /sys/class/block/*; do
+		dev=/dev/${b##*/}
+		[ -b "$dev" ] || continue
+		[ "$(sed -n 's/^PARTNAME=//p' "$b/uevent" 2>/dev/null)" = userdata ] || continue
+		ext4_label "$dev" >/dev/null 2>&1 && root=$dev && return 0
+	done
+	return 1
+}'''
+if text.count(old) != 1:
+	sys.exit("find_root() body not found exactly once in " + path)
+text = text.replace(old, new, 1)
+with open(path, "w") as f:
+	f.write(text)
+PYEOF
+	grep -q 'PARTNAME.*userdata' "$INIT" || {
+		echo "failed to patch find_root() for userdata fallback in $INIT" >&2
+		exit 1
+	}
+fi
+
 # --- patches -------------------------------------------------------------
 if [ ! -e "$WORK/.patched" ]; then
 	for c in 650f459d 8b6545f7 f5a976a8 e127de2a; do
