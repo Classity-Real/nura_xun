@@ -58,6 +58,16 @@ if [ ! -f "$ROOT/tapas-bringup/config/base.config" ]; then
 	git clone "$TAPAS_REPO" "$ROOT/tapas-bringup"
 	git -C "$ROOT/tapas-bringup" checkout -q "$TAPAS_REV"
 fi
+
+# Keep the external initramfs source pinned, but locally switch its USB
+# network function from ECM to CDC-NCM for Windows 11. ACM serial is unchanged.
+TAPAS_INIT=$ROOT/tapas-bringup/initramfs/init
+if ! grep -q 'functions/ncm.usb0' "$TAPAS_INIT"; then
+	patch -d "$ROOT/tapas-bringup" -p1 -s -N <"$ROOT/patches/tapas-ncm.patch" || {
+		echo "failed to apply the xun CDC-NCM initramfs patch" >&2
+		exit 1
+	}
+fi
 fetch "$TAPAS_IMAGE_URL" "$ROOT/tapas-images/boot-tapas-safe.img"
 
 [ -d "$DL/panel-generator" ] ||
