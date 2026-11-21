@@ -13,6 +13,9 @@ __pycache__/
 # build/fetch-sources.sh and build/build-xun.sh.
 build/*
 !build/build-xun.sh
+!build/build-xun.full.sh
+!build/recovery-init.sh
+!build/build-e2fsprogs-initramfs.sh
 !build/deploy-boot.sh
 !build/deploy-rootfs.sh
 !build/fetch-sources.sh

@@ -10,6 +10,7 @@ on:
           - both
           - boot
           - userdata
+          - recovery
         default: both
   push:
     paths:
@@ -87,6 +88,76 @@ jobs:
         with:
           name: boot-xun-img
           path: build/out/boot-xun.img
+          compression-level: 0
+
+  recovery:
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.target == 'recovery' }}
+    runs-on: namespace-profile-workshop
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Cache build/ downloads and kernel work dir
+        uses: namespacelabs/nscloud-cache-action@v1
+        with:
+          path: |
+            build/src
+            build/work
+            build/downloads
+            build/tools
+            build/rootfs-work
+            build/tapas-bringup
+            build/tapas-images
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            tar patch git curl file \
+            build-essential bc bison flex \
+            libssl-dev libelf-dev \
+            clang lld llvm \
+            python3 cpio \
+            gcc-aarch64-linux-gnu binutils-aarch64-linux-gnu \
+            libc6-dev-arm64-cross
+
+      - name: Fetch sources
+        working-directory: build
+        run: |
+          chmod +x fetch-sources.sh || true
+          bash fetch-sources.sh
+
+      - name: Build recovery boot image
+        working-directory: build
+        env:
+          XUN_RECOVERY: "1"
+        run: |
+          chmod +x build-xun.sh recovery-init.sh || true
+          bash build-xun.sh
+          test -s out/boot-xun-recovery.img
+          ls -lh out/boot-xun-recovery.img
+
+      - name: Upload recovery build log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: recovery-build-log
+          path: build/build.log
+          if-no-files-found: ignore
+
+      - name: Upload recovery boot image (GitHub)
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: boot-xun-recovery-img
+          path: build/out/boot-xun-recovery.img
+
+      - name: Upload recovery boot image (Namespace mirror)
+        if: success()
+        uses: namespace-actions/upload-artifact@v1
+        with:
+          name: boot-xun-recovery-img
+          path: build/out/boot-xun-recovery.img
           compression-level: 0
 
   install-image:
