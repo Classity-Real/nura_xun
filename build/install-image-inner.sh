@@ -50,6 +50,22 @@ chmod 755 "$ROOT"/etc/local.d/*.start "$ROOT"/etc/local.d/*.stop \
 mkdir -p "$ROOT/usr/share/alsa/ucm2"
 cp -a "$BASE/ucm2/." "$ROOT/usr/share/alsa/ucm2/"
 
+# Fetch the two FT8203 firmware images published in release focal1.
+# Pin their SHA-256 hashes so a changed or corrupted release asset cannot
+# silently enter the install image.
+mkdir -p "$BASE/firmware"
+fetch_touch_firmware() {
+	name=$1
+	sha=$2
+	url="https://github.com/Classity-Real/nura_xun/releases/download/focal1/$name"
+	tmp="$BASE/firmware/$name.download"
+	wget -q -O "$tmp" "$url"
+	echo "$sha  $tmp" | sha256sum -c -
+	mv "$tmp" "$BASE/firmware/$name"
+}
+fetch_touch_firmware focaltech_ts_fw_boe_ft8203.bin 3a528016614ddfaa33c0e38fb2b2c91aebed8711f4a9dd4f31f333c8b8b3162e
+fetch_touch_firmware focaltech_ts_fw_huaxing_ft8203.bin 0a7d49735fca986be6263134c6c4891075da9add347a2c6008eb8433cd97fa38
+
 mkdir -p "$ROOT/lib/firmware"
 cp -a "$BASE/firmware/." "$ROOT/lib/firmware/"
 
@@ -78,8 +94,8 @@ cat >"$ROOT/etc/hosts" <<'HOSTS'
 HOSTS
 printf 'nameserver 223.5.5.5\nnameserver 1.1.1.1\n' >"$ROOT/etc/resolv.conf"
 cat >"$ROOT/etc/fstab" <<'FSTAB'
-# Root is supplied by initramfs as read-only ext4 plus a RAM OverlayFS.
-# Do not remount the userdata partition read-write.
+# Persistent root and user data live on the userdata ext4 partition.
+# /tmp, /var/tmp, /run and /dev/shm are mounted as volatile tmpfs.
 FSTAB
 cat >"$ROOT/etc/locale.conf" <<'LOCALE'
 LANG=en_US.UTF-8
