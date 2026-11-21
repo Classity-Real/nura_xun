@@ -518,9 +518,8 @@
 	maximum-speed = "high-speed";
 	/*
 	 * The stock xun controller is dual-role. Keep the DWC3 role switch
-	 * enabled so the Type-C port can select host or peripheral mode.
-	 * The role-switch default remains peripheral for the bring-up NCM/ACM
-	 * link; host mode is selected when an OTG partner is detected.
+	 * enabled for Type-C role integration. Keep the default peripheral role
+	 * so the bring-up NCM/ACM link remains available at boot.
 	 */
 	dr_mode = "otg";
 	usb-role-switch;
