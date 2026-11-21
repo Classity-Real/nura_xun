@@ -48,6 +48,17 @@ fetch() {
 
 fetch "$KERNEL_URL" "$SRC/linux-$KERNEL.tar.xz"
 
+# build-xun.sh expects an extracted kernel tree at src/linux-$KERNEL.
+# Fetching the archive alone leaves that directory absent on a clean runner.
+if [ ! -f "$SRC/linux-$KERNEL/Makefile" ]; then
+	rm -rf "$SRC/linux-$KERNEL"
+	tar -xf "$SRC/linux-$KERNEL.tar.xz" -C "$SRC"
+fi
+[ -f "$SRC/linux-$KERNEL/Makefile" ] || {
+	echo "kernel source archive did not produce $SRC/linux-$KERNEL" >&2
+	exit 1
+}
+
 for sha in $SM6225_COMMITS; do
 	short=${sha:0:8}
 	fetch "$SM6225_URL/-/commit/$sha.patch" "$SRC/patches/$short.patch"
