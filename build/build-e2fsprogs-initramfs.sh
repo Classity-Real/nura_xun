@@ -55,17 +55,30 @@ LDFLAGS="-static" \
 make -j"$(nproc)"
 make install DESTDIR="$STAGE"
 
-# Keep every executable e2fsprogs installs, including the mkfs/fsck aliases.
+# Copy target-side ELF executables and their aliases only. e2fsprogs also
+# installs host build helpers such as compile_et and make-related scripts;
+# those are not initramfs programs and must never be staged as AArch64 tools.
 for dir in sbin bin usr/sbin usr/bin; do
     [ -d "$STAGE/$dir" ] || continue
     for src in "$STAGE/$dir"/*; do
         [ -e "$src" ] || [ -L "$src" ] || continue
         name=${src##*/}
         if [ -L "$src" ]; then
-            ln -sfn "$(readlink "$src")" "$OUT/$name"
+            target=$(readlink "$src")
+            resolved=$(readlink -f "$src" 2>/dev/null || true)
+            [ -n "$resolved" ] && [ -f "$resolved" ] || continue
+            if aarch64-linux-gnu-readelf -h "$resolved" 2>/dev/null |
+                grep -q 'Machine:.*AArch64'; then
+                ln -sfn "$target" "$OUT/$name"
+            fi
         elif [ -f "$src" ] && [ -x "$src" ]; then
-            cp "$src" "$OUT/$name"
-            chmod 755 "$OUT/$name"
+            if aarch64-linux-gnu-readelf -h "$src" 2>/dev/null |
+                grep -q 'Machine:.*AArch64'; then
+                cp "$src" "$OUT/$name"
+                chmod 755 "$OUT/$name"
+            else
+                echo "skipping non-target helper: $name"
+            fi
         fi
     done
 done
@@ -90,8 +103,9 @@ done
 # Fail the build if any executable is not AArch64 or still needs a dynamic
 # loader. The initramfs intentionally has no musl/glibc runtime.
 for bin in "$OUT"/*; do
-    [ -f "$bin" ] || continue
-    file "$bin" | grep -q 'ARM aarch64' || {
+    [ -f "$bin" ] && [ -x "$bin" ] || continue
+    aarch64-linux-gnu-readelf -h "$bin" 2>/dev/null |
+        grep -q 'Machine:.*AArch64' || {
         echo "wrong architecture: $bin: $(file "$bin")" >&2
         exit 1
     }
