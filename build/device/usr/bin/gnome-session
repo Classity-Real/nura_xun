@@ -8,9 +8,7 @@ export LANGUAGE=en
 unset LC_ALL
 
 # Use the US keyboard layout; do not force the Chinese Pinyin input method.
-export GTK_IM_MODULE=
-export QT_IM_MODULE=
-export XMODIFIERS=
+unset GTK_IM_MODULE QT_IM_MODULE XMODIFIERS
 
 if command -v gsettings >/dev/null 2>&1; then
 	gsettings set org.gnome.desktop.input-sources sources "[('xkb', 'us')]" 2>/dev/null || true
