@@ -256,7 +256,31 @@ if [ -n "${IMG:-}" ]; then
 	# superblock found" at mount time, even though e2fsck -fn right after
 	# mke2fs sees it as a normal pending-lazy-init filesystem, not damage.
 	# Force both to be written for real at build time instead.
-	mke2fs -q -t ext4 -L tapas_root -E root_owner=0:0,lazy_itable_init=0,lazy_journal_init=0 \
+	#
+	# That fix alone was not enough: the *same* "no valid journal
+	# superblock found" / "Could not load journal inode" failure kept
+	# recurring even with a checksum-verified, non-lazy image flashed
+	# intact. Root cause, found by diffing the kernel config against what
+	# modern e2fsprogs enables by default: this build's base.config has
+	# "# CONFIG_CRYPTO_CRC32C is not set" (CONFIG_CRC32/CRC32_ARCH are a
+	# separate, non-crypto-API lib used for other checksums and don't
+	# help here), while mke2fs's default feature set turns on
+	# metadata_csum (and 64bit), which checksums the superblock, inodes
+	# -- including the journal inode -- and group descriptors with
+	# crc32c via the crypto shash API. With no crc32c transform
+	# registered, the kernel can't verify those checksums, so it treats
+	# the journal inode/superblock as invalid, exactly matching the
+	# observed errors. Confirmed locally: mke2fs's default output has a
+	# superblock "Checksum:" field and "metadata_csum" in its feature
+	# list; adding -O ^metadata_csum,^64bit removes both and leaves a
+	# filesystem with no crc32c dependency at all (plain classic
+	# journal, "Journal features: (none)" either way).
+	#
+	# Fixing this at the image-build layer (rather than flipping on
+	# CONFIG_CRYPTO_CRC32C and rebuilding/reflashing the kernel) keeps
+	# this a userdata-image-only change with no boot.img rebuild needed.
+	mke2fs -q -t ext4 -L tapas_root -O ^metadata_csum,^64bit \
+		-E root_owner=0:0,lazy_itable_init=0,lazy_journal_init=0 \
 		-d "$ROOT" -F "$IMG"
 	# Catch a bad build (e.g. a corrupted journal) right here, before it
 	# ever reaches a device: a filesystem image that fails its own fsck
