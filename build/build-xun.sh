@@ -16,6 +16,21 @@ WORK_SCRIPT="$ROOT/work/build-xun.generated.sh"
 mkdir -p "$ROOT/work"
 cp "$FULL" "$WORK_SCRIPT"
 
+# Force ROOT to this build/ directory. The generated script lives under
+# build/work/, so its own dirname "$0" would otherwise point at work/ and
+# look for src/ under the wrong tree.
+python3 - "$WORK_SCRIPT" "$ROOT" <<'PY'
+import sys
+path, root = sys.argv[1], sys.argv[2]
+text = open(path).read()
+old = 'ROOT=$(cd "$(dirname "$0")" && pwd)'
+new = f'ROOT="{root}"  # fixed by recovery wrapper'
+if old not in text:
+    raise SystemExit('ROOT assignment not found for recovery hook')
+text = text.replace(old, new, 1)
+open(path, 'w').write(text)
+PY
+
 python3 - "$WORK_SCRIPT" <<'PY'
 import sys
 path = sys.argv[1]
