@@ -22,9 +22,9 @@
 #define FT8203_FRAME_BYTES		90
 #define FT8203_CHUNK			4096
 
-/* The controller reports in a 1600x2560 grid, the panel is 1200x1920 */
-#define FT8203_RAW_WIDTH		1536
-#define FT8203_RAW_HEIGHT		2400
+/* FT8203 reports a 1600x2560 grid; the native panel mode is 1200x1920. */
+#define FT8203_RAW_WIDTH		1600
+#define FT8203_RAW_HEIGHT		2560
 
 #define FT8203_FW_HUAXING		"focaltech_ts_fw_huaxing_ft8203.bin"
 #define FT8203_FW_BOE			"focaltech_ts_fw_boe_ft8203.bin"
@@ -464,9 +464,9 @@ static void ft8203_report(struct ft8203 *ts, const u8 *buf)
 		touch = true;
 		input_mt_report_slot_state(input, MT_TOOL_FINGER, true);
 		input_report_abs(input, ABS_MT_POSITION_X,
-				 1199 - x * 1200 / FT8203_RAW_WIDTH);
+				  x * 1200 / FT8203_RAW_WIDTH);
 		input_report_abs(input, ABS_MT_POSITION_Y,
-				 1919 - y * 1920 / FT8203_RAW_HEIGHT);
+				  y * 1920 / FT8203_RAW_HEIGHT);
 	}
 
 	input_report_key(input, BTN_TOUCH, touch);
