@@ -97,12 +97,15 @@ with open(path) as f:
     text = f.read()
 marker = "# XUN_PERSISTENT_USERDATA_V1"
 if marker not in text:
-    start = 'if [ -n "$root" ] && mount -t ext4 -o rw,noatime "$root" /newroot; then'
+    # The pinned upstream init may already have been locally modified in a
+    # cached Actions workspace. Match the final root-switch block by its
+    # surrounding control-flow anchors rather than one exact mount line.
     end_marker = '\nlog "staying in the bring-up shell"'
-    begin = text.find(start)
-    end = text.find(end_marker, begin)
-    if begin < 0 or end < 0:
-        sys.exit("could not locate the original root mount/switch block in " + path)
+    end = text.rfind(end_marker)
+    begin = text.rfind('\nif [ -n "$root" ]', 0, end)
+    if begin < 0 or end < 0 or begin >= end:
+        sys.exit("could not locate the root mount/switch block using its stable anchors in " + path)
+    begin += 1
     replacement = r'''# XUN_PERSISTENT_USERDATA_V1
 if [ -n "$root" ]; then
     mkdir -p /newroot
