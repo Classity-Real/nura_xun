@@ -45,7 +45,8 @@ jobs:
             build-essential bc bison flex \
             libssl-dev libelf-dev \
             clang lld llvm \
-            python3 cpio
+            python3 cpio \
+            gcc-aarch64-linux-gnu binutils
 
       - name: Fetch sources
         working-directory: build
