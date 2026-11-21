@@ -9,7 +9,7 @@
  	mkdir -p "$G/strings/0x409" "$G/configs/c.1/strings/0x409" \
 -		"$G/functions/ecm.usb0" "$G/functions/acm.usb0"
 +		"$G/functions/ncm.usb0" "$G/functions/acm.usb0"
-@@ -115,4 +115,4 @@
+@@ -115,5 +115,5 @@
 -	echo ECM+ACM >"$G/configs/c.1/strings/0x409/configuration"
 +	echo NCM+ACM >"$G/configs/c.1/strings/0x409/configuration"
  	# Fixed addresses, so the host keeps the same interface name
