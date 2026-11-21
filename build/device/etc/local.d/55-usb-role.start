@@ -1,0 +1,33 @@
+#!/bin/sh
+# Synchronize the WUSB3801 Type-C data role with the DWC3 USB role switch.
+# The Type-C controller reports host/device in /sys/class/typec; DWC3 exposes
+# the switch separately through /sys/class/usb_role.
+PIDFILE=/run/xun-usb-role-sync.pid
+if [ -s "$PIDFILE" ] && kill -0 "$(cat "$PIDFILE")" 2>/dev/null; then
+	exit 0
+fi
+
+(
+	trap 'exit 0' TERM INT
+	while :; do
+		for port in /sys/class/typec/port*; do
+			[ -r "$port/data_role" ] || continue
+			role=$(cat "$port/data_role" 2>/dev/null)
+			# Some kernels display both supported roles with the active one
+			# in brackets (for example: host [device]).
+			active=$(printf '%s\n' "$role" | sed -n 's/.*\[\([^]]*\)\].*/\1/p')
+			[ -n "$active" ] && role=$active
+			case "$role" in
+				host|device) ;;
+				*) continue ;;
+			esac
+			for switch in /sys/class/usb_role/*/role; do
+				[ -w "$switch" ] || continue
+				current=$(cat "$switch" 2>/dev/null)
+				[ "$current" = "$role" ] || printf '%s\n' "$role" >"$switch" 2>/dev/null
+			done
+		done
+		sleep 1
+	done
+) >/dev/null 2>&1 &
+echo $! >"$PIDFILE"
