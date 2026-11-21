@@ -36,7 +36,7 @@ rm -rf "$ROOT/var/cache/apk"
 
 # --- board files ---------------------------------------------------------
 # The bring-up rootfs renamed the distribution session binaries and put
-# wrappers in front of them to force the Chinese locale and log the session.
+# wrappers in front of them to select the English locale and log the session.
 for b in gnome-session gnome-shell; do
 	if [ -f "$ROOT/usr/bin/$b" ] && [ ! -e "$ROOT/usr/bin/$b.real" ]; then
 		mv "$ROOT/usr/bin/$b" "$ROOT/usr/bin/$b.real"
@@ -80,12 +80,12 @@ cat >"$ROOT/etc/fstab" <<'FSTAB'
 LABEL=tapas_root / ext4 defaults,noatime 0 1
 FSTAB
 cat >"$ROOT/etc/locale.conf" <<'LOCALE'
-LANG=zh_CN.UTF-8
-LC_ALL=zh_CN.UTF-8
+LANG=en_US.UTF-8
+LANGUAGE=en
 LOCALE
 cat >"$ROOT/etc/environment" <<'ENV'
-LANG=zh_CN.UTF-8
-LC_ALL=zh_CN.UTF-8
+LANG=en_US.UTF-8
+LANGUAGE=en
 ENV
 ln -sf /usr/share/zoneinfo/Asia/Shanghai "$ROOT/etc/localtime"
 echo Asia/Shanghai >"$ROOT/etc/timezone"
