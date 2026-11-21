@@ -31,12 +31,21 @@ if command -v udevd >/dev/null 2>&1; then
 	udevadm settle --timeout=30
 fi
 
-# The initramfs already owns the NCM gadget and its udhcpd service.
-# Keep the link and address, but do not rebind the UDC or start a second DHCP
-# server from the rootfs; the existing Telnet session remains available.
+# Preserve the initramfs NCM gadget and its network interface across
+# switch_root. The initramfs udhcpd is tied to its original interface instance;
+# stop it here and transfer DHCP ownership to the rootfs dnsmasq. The reconnect
+# watchdog uses the same server/config if the UDC has to be rebound later.
 if [ -e /sys/class/net/usb0 ]; then
-	ip link set usb0 up 2>/dev/null
+	ip link set dev usb0 up 2>/dev/null
 	ip addr replace 172.16.42.1/24 dev usb0 2>/dev/null
+	pkill -x udhcpd 2>/dev/null || true
+	pkill -x dnsmasq 2>/dev/null || true
+	if [ -x /usr/sbin/dnsmasq ]; then
+		/usr/sbin/dnsmasq --conf-file=/etc/dnsmasq-xun.conf 2>/dev/null ||
+			echo "xun: WARNING: could not start USB DHCP service" >/dev/kmsg
+	else
+		echo "xun: WARNING: dnsmasq missing; USB DHCP unavailable" >/dev/kmsg
+	fi
 fi
 
 if [ -x /usr/sbin/sshd ]; then
