@@ -421,10 +421,11 @@
 		pinctrl-names = "default";
 		pinctrl-0 = <&wusb3801_int_default>;
 
+		vbus-supply = <&otg_vbus>;
+
 		connector {
 			compatible = "usb-c-connector";
 			label = "USB-C";
-			vbus-supply = <&otg_vbus>;
 			power-role = "dual";
 			try-power-role = "sink";
 			data-role = "dual";
