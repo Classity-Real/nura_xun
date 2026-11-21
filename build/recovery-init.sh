@@ -39,22 +39,52 @@ if ls /sys/fs/pstore/console-ramoops* >/dev/null 2>&1; then
 fi
 
 G=/sys/kernel/config/usb_gadget/g1
+DWC3_DEV=4e00000.usb
+
+# Force dual-role controller into device/gadget mode when possible.
+force_device_role() {
+	for role in \
+		/sys/class/usb_role/*/role \
+		/sys/devices/platform/*/usb_role/*/role \
+		/sys/devices/platform/${DWC3_DEV}/usb_role/*/role; do
+		[ -e "$role" ] || continue
+		echo device >"$role" 2>/dev/null && log "USB role set to device via $role" && return 0
+	done
+	return 1
+}
+
+# Reset the dwc3 platform device (same approach as the resume hook on main).
+reset_dwc3() {
+	if [ -e /sys/bus/platform/drivers/dwc3/unbind ]; then
+		log "dwc3: unbind $DWC3_DEV"
+		echo "$DWC3_DEV" >/sys/bus/platform/drivers/dwc3/unbind 2>/dev/null || true
+		sleep 0.4
+		echo "$DWC3_DEV" >/sys/bus/platform/drivers/dwc3/bind 2>/dev/null || true
+		sleep 0.6
+	fi
+}
+
+teardown_gadget() {
+	[ -d "$G" ] || return 0
+	echo "" >"$G/UDC" 2>/dev/null || true
+	sleep 0.2
+	rm -rf "$G" 2>/dev/null || true
+}
 
 setup_gadget() {
+	force_device_role || true
 	udc=$(ls /sys/class/udc 2>/dev/null | head -n 1)
+	if [ -z "$udc" ]; then
+		reset_dwc3
+		udc=$(ls /sys/class/udc 2>/dev/null | head -n 1)
+	fi
 	[ -n "$udc" ] || return 1
-	rm -rf "$G" 2>/dev/null
+
+	teardown_gadget
 	mkdir -p "$G/strings/0x409" "$G/configs/c.1/strings/0x409"
 
-	# Prefer CDC-NCM (what current host diagnostics bind). Fall back to ECM.
-	if mkdir -p "$G/functions/ncm.usb0" 2>/dev/null; then
-		func=ncm.usb0
-		mode=ncm
-	else
-		mkdir -p "$G/functions/ecm.usb0" || return 1
-		func=ecm.usb0
-		mode=ecm
-	fi
+	# Kernel fragment enables CONFIG_USB_CONFIGFS_NCM / F_NCM (not ECM).
+	mkdir -p "$G/functions/ncm.usb0" || return 1
 	mkdir -p "$G/functions/acm.usb0" || true
 
 	echo 0x1d6b >"$G/idVendor"
@@ -64,34 +94,61 @@ setup_gadget() {
 	echo "Redmi Pad SE recovery" >"$G/strings/0x409/product"
 	echo "NCM+ACM recovery" >"$G/configs/c.1/strings/0x409/configuration"
 
-	echo 02:78:75:6e:72:01 >"$G/functions/$func/dev_addr" 2>/dev/null || true
-	echo 02:78:75:6e:72:02 >"$G/functions/$func/host_addr" 2>/dev/null || true
-	ln -sfn "$G/functions/$func" "$G/configs/c.1/$func"
+	# Fixed addresses so the host keeps a stable interface name.
+	echo 02:78:75:6e:72:01 >"$G/functions/ncm.usb0/dev_addr" 2>/dev/null || true
+	echo 02:78:75:6e:72:02 >"$G/functions/ncm.usb0/host_addr" 2>/dev/null || true
+
+	ln -sfn "$G/functions/ncm.usb0" "$G/configs/c.1/ncm.usb0"
 	[ -d "$G/functions/acm.usb0" ] && ln -sfn "$G/functions/acm.usb0" "$G/configs/c.1/acm.usb0"
 
-	echo "" >"$G/UDC" 2>/dev/null
-	sleep 0.2
+	# Max packet / OS descriptors can reduce flaky host binds on some stacks.
+echo 0x0100 >"$G/bcdDevice" 2>/dev/null || true
+	echo 0x0200 >"$G/bcdUSB" 2>/dev/null || true
+
+	echo "" >"$G/UDC" 2>/dev/null || true
+	sleep 0.3
 	echo "$udc" >"$G/UDC" || return 1
-	log "USB gadget bound to $udc ($mode + acm)"
+	sleep 0.5
+	log "USB gadget bound to $udc (ncm + acm)"
+	return 0
+}
+
+rebind_udc() {
+	[ -d "$G" ] || return 1
+	udc=$(ls /sys/class/udc 2>/dev/null | head -n 1)
+	[ -n "$udc" ] || {
+		reset_dwc3
+		udc=$(ls /sys/class/udc 2>/dev/null | head -n 1)
+	}
+	[ -n "$udc" ] || return 1
+	log "USB: rebinding UDC $udc"
+	echo "" >"$G/UDC" 2>/dev/null || true
+	sleep 0.3
+	# Optional full controller reset when endpoint queue errors accumulate.
+	if [ "${1:-}" = hard ]; then
+		reset_dwc3
+		udc=$(ls /sys/class/udc 2>/dev/null | head -n 1)
+		[ -n "$udc" ] || return 1
+	fi
+	echo "$udc" >"$G/UDC" 2>/dev/null || return 1
+	sleep 0.5
 	return 0
 }
 
 setup_net() {
-	# Wait for netdev from the gadget function
 	ifname=
-	for _ in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15; do
+	for _ in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20; do
 		for cand in usb0 usb1 eth0; do
 			[ -e "/sys/class/net/$cand" ] && ifname=$cand && break
 		done
 		[ -n "$ifname" ] && break
-		# ConfigFS may export the ifname under the function dir
 		for f in /sys/kernel/config/usb_gadget/g1/functions/*/ifname; do
 			[ -f "$f" ] || continue
 			n=$(cat "$f" 2>/dev/null)
 			[ -n "$n" ] && [ -e "/sys/class/net/$n" ] && ifname=$n && break
 		done
 		[ -n "$ifname" ] && break
-		sleep 0.3
+		sleep 0.25
 	done
 	[ -n "$ifname" ] || return 1
 
@@ -112,6 +169,7 @@ setup_net() {
 	pkill telnetd 2>/dev/null || true
 	telnetd -l /bin/sh 2>/dev/null || true
 	log "network on $ifname: 172.16.42.1  (telnet 172.16.42.1)"
+	echo "$ifname" >/tmp/usb_ifname
 	return 0
 }
 
@@ -124,7 +182,6 @@ find_userdata() {
 		echo "$dev"
 		return 0
 	done
-	# Fallback: large mmc partition often used as userdata
 	for dev in /dev/mmcblk1p91 /dev/mmcblk0p91; do
 		[ -b "$dev" ] && echo "$dev" && return 0
 	done
@@ -141,12 +198,10 @@ diag_userdata() {
 		log "dumpe2fs not present in this initramfs"
 	fi
 	if command -v e2fsck >/dev/null 2>&1; then
-		# NEVER auto-repair here. Read-only check only.
 		e2fsck -n "$dev" 2>&1 | head -n 120 | while IFS= read -r line; do log "e2fsck: $line"; done
 	else
 		log "e2fsck not present in this initramfs"
 	fi
-	# Superblock magic at offset 0x438 = 1080
 	dd if="$dev" bs=1 skip=1080 count=2 2>/dev/null | od -An -tx1 | while IFS= read -r line; do
 		log "superblock magic bytes @1080: $line (expect 53 ef)"
 	done
@@ -177,12 +232,13 @@ echo "  userdata is NOT auto-repaired or formatted"
 echo "  /mnt/userdata  - RO mount if successful"
 echo "  last_kmsg      - previous ramoops if any"
 echo "  diag           - re-run e2fsck -n / dumpe2fs -h"
+echo "  usb_fix       - hard rebind dwc3 + gadget"
 echo "  telnet host:   telnet 172.16.42.1  (host IP 172.16.42.2/24)"
 alias last_kmsg='cat /tmp/last_kmsg 2>/dev/null || echo no ramoops'
 alias diag='dev=$(cat /tmp/userdata_dev 2>/dev/null); [ -n "$dev" ] && dumpe2fs -h "$dev"; [ -n "$dev" ] && e2fsck -n "$dev"'
+alias usb_fix='echo hard >/tmp/usb_rebind_req'
 EOF
 
-# --- USB ---
 wait_udc() {
 	for _ in $(seq "$1"); do
 		[ -n "$(ls /sys/class/udc 2>/dev/null)" ] && return 0
@@ -191,28 +247,57 @@ wait_udc() {
 	return 1
 }
 
-if wait_udc 12; then
-	if setup_gadget; then
-		(
-			while :; do
-				[ -c /dev/ttyGS0 ] && setsid cttyhack sh -l </dev/ttyGS0 >/dev/ttyGS0 2>&1
-				sleep 1
-			done
-		) &
-		setup_net || log "gadget up but network setup failed"
-		# Keep trying network a few times (UDC/host race)
-		(
-			for _ in 1 2 3 4 5 6 7 8 9 10; do
-				sleep 2
-				setup_net && break
-			done
-		) &
-	else
-		log "USB gadget setup failed; udc='$(ls /sys/class/udc 2>/dev/null)'"
+force_device_role || true
+if ! wait_udc 8; then
+	log "no UDC yet, resetting dwc3"
+	reset_dwc3
+	wait_udc 10 || true
+fi
+
+if setup_gadget; then
+	(
+		while :; do
+			[ -c /dev/ttyGS0 ] && setsid cttyhack sh -l </dev/ttyGS0 >/dev/ttyGS0 2>&1
+			sleep 1
+		done
+	) &
+	if ! setup_net; then
+		log "gadget up but network not ready; hard rebind"
+		rebind_udc hard || true
+		setup_net || log "network still failed after hard rebind"
 	fi
 else
-	log "no UDC appeared"
+	log "USB gadget setup failed; udc='$(ls /sys/class/udc 2>/dev/null)'"
+	reset_dwc3
+	setup_gadget && setup_net || log "USB recovery path failed"
 fi
+
+# Watchdog: soft rebind periodically; hard rebind on request or missing iface.
+(
+	miss=0
+	while :; do
+		sleep 3
+		if [ -f /tmp/usb_rebind_req ]; then
+			rm -f /tmp/usb_rebind_req
+			rebind_udc hard || true
+			setup_net || true
+			continue
+		fi
+		ifname=$(cat /tmp/usb_ifname 2>/dev/null)
+		if [ -z "$ifname" ] || [ ! -e "/sys/class/net/$ifname" ]; then
+			miss=$((miss + 1))
+			if [ "$miss" -ge 2 ]; then
+				miss=0
+				rebind_udc hard || true
+				setup_net || true
+			fi
+			continue
+		fi
+		miss=0
+		# Keep address + services alive across soft disconnects.
+		setup_net >/dev/null 2>&1 || true
+	done
+) &
 
 sleep 2
 mdev -s
@@ -241,10 +326,9 @@ fi
 
 log "recovery ready — staying in initramfs (no switch_root)"
 log "host: ip addr add 172.16.42.2/24 dev <usb-iface>; telnet 172.16.42.1"
+log "if USB dies: unplug/replug cable; device will rebind dwc3 automatically"
 
-# Forever: refresh gadget net if needed, keep a console shell alive
 while :; do
-	setup_net >/dev/null 2>&1 || true
 	if [ -c /dev/console ]; then
 		setsid cttyhack sh -l </dev/console >/dev/console 2>&1 || sh -l
 	else
