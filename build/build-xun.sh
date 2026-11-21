@@ -1,7 +1,7 @@
 #!/bin/bash
 # Build the xun bring-up kernel: mainline v7.2.1 + the SM6225 support
 # patches from stable-sm6225, our DTS and the M84 panel drivers.
-set -eu
+set -euo pipefail
 ROOT=$(cd "$(dirname "$0")" && pwd)
 SRC=$ROOT/src/linux-7.2.1
 WORK=$ROOT/work
