@@ -516,7 +516,14 @@
 	phys = <&usb_hsphy>;
 	phy-names = "usb2-phy";
 	maximum-speed = "high-speed";
-	dr_mode = "peripheral";
+	/*
+	 * The stock xun controller is dual-role. Keep the DWC3 role switch
+	 * enabled so the Type-C port can select host or peripheral mode.
+	 * The role-switch default remains peripheral for the bring-up NCM/ACM
+	 * link; host mode is selected when an OTG partner is detected.
+	 */
+	dr_mode = "otg";
+	usb-role-switch;
 };
 
 &usb_hsphy {
