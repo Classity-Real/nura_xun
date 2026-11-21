@@ -12,6 +12,18 @@ PATCHES=$ROOT/src/patches
 
 mkdir -p "$WORK" "$OUT"
 
+# fetch-sources.sh downloads the upstream kernel tarball but does not unpack
+# it. Materialize the source tree here before checking for it.
+KERNEL_ARCHIVE=$ROOT/src/linux-7.2.1.tar.xz
+if [ ! -d "$SRC" ]; then
+	[ -s "$KERNEL_ARCHIVE" ] || {
+		echo "kernel archive $KERNEL_ARCHIVE missing: run ./fetch-sources.sh first" >&2
+		exit 1
+	}
+	tar -tJf "$KERNEL_ARCHIVE" >/dev/null
+	tar -xJf "$KERNEL_ARCHIVE" -C "$ROOT/src"
+fi
+
 [ -d "$SRC" ] || {
 	echo "kernel tree $SRC missing: run ./fetch-sources.sh first" >&2
 	exit 1
