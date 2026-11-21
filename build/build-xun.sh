@@ -166,6 +166,7 @@ fi
     text = text[:begin] + replacement + text[end:]
     with open(path, "w") as f:
         f.write(text)
+PYEOF
 
 # --- patches -------------------------------------------------------------
 if [ ! -e "$WORK/.patched" ]; then
