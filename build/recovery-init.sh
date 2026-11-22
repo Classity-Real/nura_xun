@@ -2,15 +2,7 @@
 # SPDX-License-Identifier: GPL-2.0-only
 #
 # Temporary xun recovery init.
-#
-# Goals:
-#  - Boot without depending on the corrupted userdata rootfs
-#  - Never format, erase, or write-repair userdata by default
-#  - Provide console + USB gadget shell (telnet 172.16.42.1)
-#  - Mount userdata read-only for inspection when possible
-#  - Run read-only e2fs diagnostics on console
-#
-# Flash ONLY boot_b with boot-xun-recovery.img. Do not flash userdata.
+# Flash ONLY boot_b with boot-xun-recovery.img. Do not touch userdata.
 
 /bin/busybox mkdir -p /proc /sys /dev /tmp /etc /mnt /mnt/userdata /sbin /usr/bin /usr/sbin /newroot
 /bin/busybox --install -s
@@ -33,6 +25,17 @@ log() {
 log "recovery init, kernel $(uname -r)"
 log "userdata will NOT be formatted or written by default"
 
+# Prove which remote-shell applets this busybox actually has.
+for a in telnetd udhcpd nc setsid cttyhack; do
+	if /bin/busybox --list 2>/dev/null | grep -qx "$a"; then
+		log "busybox applet: $a OK"
+	elif command -v "$a" >/dev/null 2>&1; then
+		log "busybox applet: $a present in PATH"
+	else
+		log "busybox applet: $a MISSING"
+	fi
+done
+
 if ls /sys/fs/pstore/console-ramoops* >/dev/null 2>&1; then
 	cat /sys/fs/pstore/console-ramoops* >/tmp/last_kmsg 2>/dev/null
 	log "previous ramoops saved to /tmp/last_kmsg"
@@ -41,7 +44,6 @@ fi
 G=/sys/kernel/config/usb_gadget/g1
 DWC3_DEV=4e00000.usb
 
-# Force dual-role controller into device/gadget mode when possible.
 force_device_role() {
 	for role in \
 		/sys/class/usb_role/*/role \
@@ -53,7 +55,6 @@ force_device_role() {
 	return 1
 }
 
-# Reset the dwc3 platform device (same approach as the resume hook on main).
 reset_dwc3() {
 	if [ -e /sys/bus/platform/drivers/dwc3/unbind ]; then
 		log "dwc3: unbind $DWC3_DEV"
@@ -82,8 +83,6 @@ setup_gadget() {
 
 	teardown_gadget
 	mkdir -p "$G/strings/0x409" "$G/configs/c.1/strings/0x409"
-
-	# Kernel fragment enables CONFIG_USB_CONFIGFS_NCM / F_NCM (not ECM).
 	mkdir -p "$G/functions/ncm.usb0" || return 1
 	mkdir -p "$G/functions/acm.usb0" || true
 
@@ -93,22 +92,18 @@ setup_gadget() {
 	echo Xiaomi >"$G/strings/0x409/manufacturer"
 	echo "Redmi Pad SE recovery" >"$G/strings/0x409/product"
 	echo "NCM+ACM recovery" >"$G/configs/c.1/strings/0x409/configuration"
-
-	# Fixed addresses so the host keeps a stable interface name.
 	echo 02:78:75:6e:72:01 >"$G/functions/ncm.usb0/dev_addr" 2>/dev/null || true
 	echo 02:78:75:6e:72:02 >"$G/functions/ncm.usb0/host_addr" 2>/dev/null || true
-
 	ln -sfn "$G/functions/ncm.usb0" "$G/configs/c.1/ncm.usb0"
 	[ -d "$G/functions/acm.usb0" ] && ln -sfn "$G/functions/acm.usb0" "$G/configs/c.1/acm.usb0"
-
-	# Max packet / OS descriptors can reduce flaky host binds on some stacks.
-echo 0x0100 >"$G/bcdDevice" 2>/dev/null || true
+	echo 0x0100 >"$G/bcdDevice" 2>/dev/null || true
 	echo 0x0200 >"$G/bcdUSB" 2>/dev/null || true
 
 	echo "" >"$G/UDC" 2>/dev/null || true
 	sleep 0.3
 	echo "$udc" >"$G/UDC" || return 1
 	sleep 0.5
+	mdev -s 2>/dev/null || true
 	log "USB gadget bound to $udc (ncm + acm)"
 	return 0
 }
@@ -124,7 +119,6 @@ rebind_udc() {
 	log "USB: rebinding UDC $udc"
 	echo "" >"$G/UDC" 2>/dev/null || true
 	sleep 0.3
-	# Optional full controller reset when endpoint queue errors accumulate.
 	if [ "${1:-}" = hard ]; then
 		reset_dwc3
 		udc=$(ls /sys/class/udc 2>/dev/null | head -n 1)
@@ -132,7 +126,42 @@ rebind_udc() {
 	fi
 	echo "$udc" >"$G/UDC" 2>/dev/null || return 1
 	sleep 0.5
+	mdev -s 2>/dev/null || true
 	return 0
+}
+
+# Start remote shells once; do not pkill them on every watchdog tick.
+start_remote_shells() {
+	# --- Telnet on 23 ---
+	if ! pgrep -x telnetd >/dev/null 2>&1; then
+		if /bin/busybox telnetd -l /bin/sh -p 23 2>/tmp/telnetd.err; then
+			log "telnetd started on :23"
+		elif /bin/busybox telnetd -l /bin/sh 2>/tmp/telnetd.err; then
+			log "telnetd started (default port)"
+		else
+			log "telnetd FAILED: $(cat /tmp/telnetd.err 2>/dev/null)"
+		fi
+	fi
+
+	# --- Fallback TCP shell on 2323 via nc (if applet exists) ---
+	if ! pgrep -f 'nc -l' >/dev/null 2>&1; then
+		if /bin/busybox --list 2>/dev/null | grep -qx nc; then
+			(/bin/busybox nc -lk -p 2323 -e /bin/sh &) 2>/tmp/nc.err
+			sleep 0.2
+			if pgrep -f 'nc .*2323' >/dev/null 2>&1; then
+				log "nc shell listening on :2323"
+			else
+				log "nc shell failed: $(cat /tmp/nc.err 2>/dev/null)"
+			fi
+		fi
+	fi
+
+	# Report listeners if /proc/net/tcp is available
+	if [ -r /proc/net/tcp ]; then
+		# port 23 = 0017, port 2323 = 0913 (hex, little-endian local_address)
+		grep -q ':0017 ' /proc/net/tcp && log "listener check: TCP :23 is OPEN" || log "listener check: TCP :23 NOT in /proc/net/tcp"
+		grep -q ':0913 ' /proc/net/tcp && log "listener check: TCP :2323 is OPEN" || true
+	fi
 }
 
 setup_net() {
@@ -157,20 +186,45 @@ setup_net() {
 	ip addr add 172.16.42.1/24 dev "$ifname" 2>/dev/null || \
 		ifconfig "$ifname" 172.16.42.1 netmask 255.255.255.0 up || return 1
 
-	printf '%s\n' \
-		"start 172.16.42.2" \
-		"end 172.16.42.2" \
-		"interface $ifname" \
-		"option subnet 255.255.255.0" \
-		"lease_file /tmp/udhcpd.leases" >/etc/udhcpd.conf
-	touch /tmp/udhcpd.leases
-	pkill udhcpd 2>/dev/null || true
-	udhcpd /etc/udhcpd.conf 2>/dev/null || true
-	pkill telnetd 2>/dev/null || true
-	telnetd -l /bin/sh 2>/dev/null || true
-	log "network on $ifname: 172.16.42.1  (telnet 172.16.42.1)"
+	# DHCP for the host (optional; static 172.16.42.2 also works)
+	if ! pgrep -x udhcpd >/dev/null 2>&1; then
+		printf '%s\n' \
+			"start 172.16.42.2" \
+			"end 172.16.42.2" \
+			"interface $ifname" \
+			"option subnet 255.255.255.0" \
+			"lease_file /tmp/udhcpd.leases" >/etc/udhcpd.conf
+		touch /tmp/udhcpd.leases
+		if /bin/busybox udhcpd /etc/udhcpd.conf 2>/tmp/udhcpd.err; then
+			log "udhcpd started on $ifname"
+		else
+			log "udhcpd failed (host can still use static 172.16.42.2): $(cat /tmp/udhcpd.err 2>/dev/null)"
+		fi
+	fi
+
+	start_remote_shells
+	log "network on $ifname: 172.16.42.1  (telnet 172.16.42.1  or  nc 172.16.42.1 2323)"
 	echo "$ifname" >/tmp/usb_ifname
 	return 0
+}
+
+# Persistent CDC-ACM shell on ttyGS0 (host: /dev/ttyACM0).
+start_acm_shell() {
+	(
+		while :; do
+			if [ -c /dev/ttyGS0 ]; then
+				log "ttyGS0 present — starting ACM shell"
+				# Make this the controlling TTY and drop into a login-like shell.
+				setsid /bin/busybox sh -c 'exec <>/dev/ttyGS0 >&0 2>&1; echo; echo "xun-recovery ACM shell"; echo "type: diag  or  dmesg | tail"; exec /bin/sh -l' 
+				log "ACM shell exited, respawning"
+			else
+				# Node can lag the gadget bind; refresh device nodes.
+				mdev -s 2>/dev/null || true
+			fi
+			sleep 1
+		done
+	) &
+	echo $! >/tmp/acm_shell.pid
 }
 
 find_userdata() {
@@ -230,10 +284,8 @@ export PS1='xun-recovery# '
 echo "=== xun temporary recovery shell ==="
 echo "  userdata is NOT auto-repaired or formatted"
 echo "  /mnt/userdata  - RO mount if successful"
-echo "  last_kmsg      - previous ramoops if any"
-echo "  diag           - re-run e2fsck -n / dumpe2fs -h"
-echo "  usb_fix       - hard rebind dwc3 + gadget"
-echo "  telnet host:   telnet 172.16.42.1  (host IP 172.16.42.2/24)"
+echo "  last_kmsg / diag / usb_fix"
+echo "  telnet 172.16.42.1   or   nc 172.16.42.1 2323"
 alias last_kmsg='cat /tmp/last_kmsg 2>/dev/null || echo no ramoops'
 alias diag='dev=$(cat /tmp/userdata_dev 2>/dev/null); [ -n "$dev" ] && dumpe2fs -h "$dev"; [ -n "$dev" ] && e2fsck -n "$dev"'
 alias usb_fix='echo hard >/tmp/usb_rebind_req'
@@ -255,12 +307,7 @@ if ! wait_udc 8; then
 fi
 
 if setup_gadget; then
-	(
-		while :; do
-			[ -c /dev/ttyGS0 ] && setsid cttyhack sh -l </dev/ttyGS0 >/dev/ttyGS0 2>&1
-			sleep 1
-		done
-	) &
+	start_acm_shell
 	if ! setup_net; then
 		log "gadget up but network not ready; hard rebind"
 		rebind_udc hard || true
@@ -269,14 +316,19 @@ if setup_gadget; then
 else
 	log "USB gadget setup failed; udc='$(ls /sys/class/udc 2>/dev/null)'"
 	reset_dwc3
-	setup_gadget && setup_net || log "USB recovery path failed"
+	if setup_gadget; then
+		start_acm_shell
+		setup_net || true
+	else
+		log "USB recovery path failed"
+	fi
 fi
 
-# Watchdog: soft rebind periodically; hard rebind on request or missing iface.
+# Watchdog: keep address; restart shells only if they died; hard rebind on request.
 (
 	miss=0
 	while :; do
-		sleep 3
+		sleep 4
 		if [ -f /tmp/usb_rebind_req ]; then
 			rm -f /tmp/usb_rebind_req
 			rebind_udc hard || true
@@ -294,8 +346,10 @@ fi
 			continue
 		fi
 		miss=0
-		# Keep address + services alive across soft disconnects.
-		setup_net >/dev/null 2>&1 || true
+		# Refresh IP without killing listeners.
+		ip addr add 172.16.42.1/24 dev "$ifname" 2>/dev/null || true
+		ip link set dev "$ifname" up 2>/dev/null || true
+		start_remote_shells
 	done
 ) &
 
@@ -325,8 +379,7 @@ else
 fi
 
 log "recovery ready — staying in initramfs (no switch_root)"
-log "host: ip addr add 172.16.42.2/24 dev <usb-iface>; telnet 172.16.42.1"
-log "if USB dies: unplug/replug cable; device will rebind dwc3 automatically"
+log "host: telnet 172.16.42.1   OR   picocom -b 115200 /dev/ttyACM0"
 
 while :; do
 	if [ -c /dev/console ]; then
