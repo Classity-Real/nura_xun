@@ -1,8 +1,6 @@
 #!/bin/busybox sh
 # SPDX-License-Identifier: GPL-2.0-only
-#
-# Temporary xun recovery init.
-# Flash ONLY boot_b with boot-xun-recovery.img. Do not touch userdata.
+# Temporary xun recovery init. Flash ONLY boot_b. Do not touch userdata.
 
 /bin/busybox mkdir -p /proc /sys /dev /tmp /etc /mnt /mnt/userdata /sbin /usr/bin /usr/sbin /newroot
 /bin/busybox --install -s
@@ -12,10 +10,15 @@ mount -t proc proc /proc
 mount -t sysfs sysfs /sys
 mount -t devtmpfs devtmpfs /dev 2>/dev/null || mdev -s
 mkdir -p /dev/pts /sys/kernel/config /sys/fs/pstore
-mount -t devpts devpts /dev/pts
+mount -t devpts devpts /dev/pts 2>/dev/null || mount -t devpts devpts /dev/pts -o mode=0620,gid=5
 mount -t configfs configfs /sys/kernel/config
 mount -t pstore pstore /sys/fs/pstore 2>/dev/null
 mount -t tmpfs tmpfs /tmp
+
+# telnetd / login shells need a working ptmx
+[ -c /dev/ptmx ] || mknod -m 666 /dev/ptmx c 5 2
+[ -c /dev/tty ] || mknod -m 666 /dev/tty c 5 0
+[ -c /dev/null ] || mknod -m 666 /dev/null c 1 3
 
 log() {
 	echo "xun-recovery: $*" >/dev/kmsg
@@ -25,12 +28,9 @@ log() {
 log "recovery init, kernel $(uname -r)"
 log "userdata will NOT be formatted or written by default"
 
-# Prove which remote-shell applets this busybox actually has.
 for a in telnetd udhcpd nc setsid cttyhack; do
 	if /bin/busybox --list 2>/dev/null | grep -qx "$a"; then
 		log "busybox applet: $a OK"
-	elif command -v "$a" >/dev/null 2>&1; then
-		log "busybox applet: $a present in PATH"
 	else
 		log "busybox applet: $a MISSING"
 	fi
@@ -130,37 +130,60 @@ rebind_udc() {
 	return 0
 }
 
-# Start remote shells once; do not pkill them on every watchdog tick.
+port_open() {
+	# /proc/net/tcp{,6}: local port is last 4 hex digits of local_address (host order)
+	# 23 = 0017, 2323 = 0913
+	hex=$1
+	grep -E ":${hex} " /proc/net/tcp /proc/net/tcp6 2>/dev/null | grep -q .
+}
+
 start_remote_shells() {
-	# --- Telnet on 23 ---
-	if ! pgrep -x telnetd >/dev/null 2>&1; then
-		if /bin/busybox telnetd -l /bin/sh -p 23 2>/tmp/telnetd.err; then
-			log "telnetd started on :23"
-		elif /bin/busybox telnetd -l /bin/sh 2>/tmp/telnetd.err; then
-			log "telnetd started (default port)"
-		else
-			log "telnetd FAILED: $(cat /tmp/telnetd.err 2>/dev/null)"
-		fi
+	# If a live listener exists, do nothing.
+	if port_open 0017; then
+		return 0
 	fi
 
-	# --- Fallback TCP shell on 2323 via nc (if applet exists) ---
-	if ! pgrep -f 'nc -l' >/dev/null 2>&1; then
+	# Kill stale non-listening telnetd processes
+	pkill telnetd 2>/dev/null || true
+	sleep 0.2
+
+	# -F: stay in foreground so we can background it ourselves and keep a stable pid
+	# -b 0.0.0.0: bind all interfaces (usb0 included)
+	# -l /bin/sh: no login(1) required
+	(
+		exec /bin/busybox telnetd -F -p 23 -b 0.0.0.0 -l /bin/sh
+	) >/tmp/telnetd.log 2>&1 &
+	echo $! >/tmp/telnetd.pid
+	sleep 0.5
+
+	if port_open 0017; then
+		log "telnetd LISTENING on 0.0.0.0:23 (pid $(cat /tmp/telnetd.pid))"
+	elif kill -0 "$(cat /tmp/telnetd.pid 2>/dev/null)" 2>/dev/null; then
+		log "telnetd running but port 23 not visible yet: $(cat /tmp/telnetd.log 2>/dev/null)"
+		log "telnetd log/proc: $(tr '\n' ' ' </tmp/telnetd.log 2>/dev/null)"
+	else
+		log "telnetd DIED: $(cat /tmp/telnetd.log 2>/dev/null)"
+		# Last-resort pure-busybox TCP shell if nc applet exists
 		if /bin/busybox --list 2>/dev/null | grep -qx nc; then
-			(/bin/busybox nc -lk -p 2323 -e /bin/sh &) 2>/tmp/nc.err
-			sleep 0.2
-			if pgrep -f 'nc .*2323' >/dev/null 2>&1; then
-				log "nc shell listening on :2323"
-			else
-				log "nc shell failed: $(cat /tmp/nc.err 2>/dev/null)"
-			fi
+			(
+				while :; do
+					/bin/busybox nc -ll -p 23 -e /bin/sh
+					sleep 1
+				done
+			) >/tmp/nc23.log 2>&1 &
+			log "spawned nc -ll -p 23 fallback"
 		fi
 	fi
 
-	# Report listeners if /proc/net/tcp is available
-	if [ -r /proc/net/tcp ]; then
-		# port 23 = 0017, port 2323 = 0913 (hex, little-endian local_address)
-		grep -q ':0017 ' /proc/net/tcp && log "listener check: TCP :23 is OPEN" || log "listener check: TCP :23 NOT in /proc/net/tcp"
-		grep -q ':0913 ' /proc/net/tcp && log "listener check: TCP :2323 is OPEN" || true
+	# Extra shell on 2323 when nc exists
+	if /bin/busybox --list 2>/dev/null | grep -qx nc && ! port_open 0913; then
+		(
+			while :; do
+				/bin/busybox nc -ll -p 2323 -e /bin/sh
+				sleep 1
+			done
+		) >/tmp/nc2323.log 2>&1 &
+		log "nc shell on :2323"
 	fi
 }
 
@@ -186,7 +209,6 @@ setup_net() {
 	ip addr add 172.16.42.1/24 dev "$ifname" 2>/dev/null || \
 		ifconfig "$ifname" 172.16.42.1 netmask 255.255.255.0 up || return 1
 
-	# DHCP for the host (optional; static 172.16.42.2 also works)
 	if ! pgrep -x udhcpd >/dev/null 2>&1; then
 		printf '%s\n' \
 			"start 172.16.42.2" \
@@ -195,36 +217,37 @@ setup_net() {
 			"option subnet 255.255.255.0" \
 			"lease_file /tmp/udhcpd.leases" >/etc/udhcpd.conf
 		touch /tmp/udhcpd.leases
-		if /bin/busybox udhcpd /etc/udhcpd.conf 2>/tmp/udhcpd.err; then
-			log "udhcpd started on $ifname"
-		else
-			log "udhcpd failed (host can still use static 172.16.42.2): $(cat /tmp/udhcpd.err 2>/dev/null)"
-		fi
+		/bin/busybox udhcpd /etc/udhcpd.conf 2>/tmp/udhcpd.err && log "udhcpd started" || \
+			log "udhcpd failed (use static 172.16.42.2): $(cat /tmp/udhcpd.err 2>/dev/null)"
 	fi
 
 	start_remote_shells
-	log "network on $ifname: 172.16.42.1  (telnet 172.16.42.1  or  nc 172.16.42.1 2323)"
+	log "network on $ifname: 172.16.42.1"
 	echo "$ifname" >/tmp/usb_ifname
 	return 0
 }
 
-# Persistent CDC-ACM shell on ttyGS0 (host: /dev/ttyACM0).
+# ACM: ignore hangups so host open/close of ttyACM0 does not kill the shell forever.
 start_acm_shell() {
 	(
 		while :; do
+			mdev -s 2>/dev/null || true
 			if [ -c /dev/ttyGS0 ]; then
-				log "ttyGS0 present — starting ACM shell"
-				# Make this the controlling TTY and drop into a login-like shell.
-				setsid /bin/busybox sh -c 'exec <>/dev/ttyGS0 >&0 2>&1; echo; echo "xun-recovery ACM shell"; echo "type: diag  or  dmesg | tail"; exec /bin/sh -l' 
-				log "ACM shell exited, respawning"
-			else
-				# Node can lag the gadget bind; refresh device nodes.
-				mdev -s 2>/dev/null || true
+				log "ttyGS0 present — ACM shell"
+				# trap HUP so a host-side hangup does not kill the outer loop instantly
+				setsid /bin/busybox sh -c '
+					trap "" HUP
+					exec <>/dev/ttyGS0 >&0 2>&1
+					stty sane 2>/dev/null || true
+					echo
+					echo "xun-recovery ACM shell (ttyGS0)"
+					exec /bin/sh -l
+				'
+				log "ACM shell exited (will respawn)"
 			fi
 			sleep 1
 		done
 	) &
-	echo $! >/tmp/acm_shell.pid
 }
 
 find_userdata() {
@@ -248,16 +271,12 @@ diag_userdata() {
 	blkid "$dev" 2>/dev/null | while IFS= read -r line; do log "blkid: $line"; done
 	if command -v dumpe2fs >/dev/null 2>&1; then
 		dumpe2fs -h "$dev" 2>&1 | while IFS= read -r line; do log "dumpe2fs: $line"; done
-	else
-		log "dumpe2fs not present in this initramfs"
 	fi
 	if command -v e2fsck >/dev/null 2>&1; then
 		e2fsck -n "$dev" 2>&1 | head -n 120 | while IFS= read -r line; do log "e2fsck: $line"; done
-	else
-		log "e2fsck not present in this initramfs"
 	fi
 	dd if="$dev" bs=1 skip=1080 count=2 2>/dev/null | od -An -tx1 | while IFS= read -r line; do
-		log "superblock magic bytes @1080: $line (expect 53 ef)"
+		log "superblock magic @1080: $line (expect 53 ef)"
 	done
 }
 
@@ -269,11 +288,8 @@ try_mount_ro() {
 		ls -la /mnt/userdata | head -n 20 | while IFS= read -r line; do log "ls: $line"; done
 		return 0
 	fi
-	log "RO noload mount failed: $(cat /tmp/mount_ro.err 2>/dev/null)"
-	if mount -t ext4 -o ro "$dev" /mnt/userdata 2>/tmp/mount_ro2.err; then
-		log "mounted $dev RO at /mnt/userdata"
-		return 0
-	fi
+	log "RO noload failed: $(cat /tmp/mount_ro.err 2>/dev/null)"
+	mount -t ext4 -o ro "$dev" /mnt/userdata 2>/tmp/mount_ro2.err && log "mounted $dev RO" && return 0
 	log "RO mount failed: $(cat /tmp/mount_ro2.err 2>/dev/null)"
 	return 1
 }
@@ -282,10 +298,6 @@ cat >/etc/profile <<'EOF'
 export PATH=/bin:/sbin:/usr/bin:/usr/sbin
 export PS1='xun-recovery# '
 echo "=== xun temporary recovery shell ==="
-echo "  userdata is NOT auto-repaired or formatted"
-echo "  /mnt/userdata  - RO mount if successful"
-echo "  last_kmsg / diag / usb_fix"
-echo "  telnet 172.16.42.1   or   nc 172.16.42.1 2323"
 alias last_kmsg='cat /tmp/last_kmsg 2>/dev/null || echo no ramoops'
 alias diag='dev=$(cat /tmp/userdata_dev 2>/dev/null); [ -n "$dev" ] && dumpe2fs -h "$dev"; [ -n "$dev" ] && e2fsck -n "$dev"'
 alias usb_fix='echo hard >/tmp/usb_rebind_req'
@@ -301,85 +313,43 @@ wait_udc() {
 
 force_device_role || true
 if ! wait_udc 8; then
-	log "no UDC yet, resetting dwc3"
 	reset_dwc3
 	wait_udc 10 || true
 fi
 
 if setup_gadget; then
 	start_acm_shell
-	if ! setup_net; then
-		log "gadget up but network not ready; hard rebind"
-		rebind_udc hard || true
-		setup_net || log "network still failed after hard rebind"
-	fi
+	setup_net || { rebind_udc hard || true; setup_net || true; }
 else
-	log "USB gadget setup failed; udc='$(ls /sys/class/udc 2>/dev/null)'"
+	log "USB gadget setup failed"
 	reset_dwc3
-	if setup_gadget; then
-		start_acm_shell
-		setup_net || true
-	else
-		log "USB recovery path failed"
-	fi
+	setup_gadget && start_acm_shell && setup_net || log "USB recovery path failed"
 fi
 
-# Watchdog: keep address; restart shells only if they died; hard rebind on request.
 (
-	miss=0
 	while :; do
-		sleep 4
-		if [ -f /tmp/usb_rebind_req ]; then
-			rm -f /tmp/usb_rebind_req
-			rebind_udc hard || true
-			setup_net || true
-			continue
-		fi
+		sleep 5
+		[ -f /tmp/usb_rebind_req ] && rm -f /tmp/usb_rebind_req && rebind_udc hard && setup_net
 		ifname=$(cat /tmp/usb_ifname 2>/dev/null)
-		if [ -z "$ifname" ] || [ ! -e "/sys/class/net/$ifname" ]; then
-			miss=$((miss + 1))
-			if [ "$miss" -ge 2 ]; then
-				miss=0
-				rebind_udc hard || true
-				setup_net || true
-			fi
-			continue
-		fi
-		miss=0
-		# Refresh IP without killing listeners.
+		[ -n "$ifname" ] && [ -e "/sys/class/net/$ifname" ] || continue
 		ip addr add 172.16.42.1/24 dev "$ifname" 2>/dev/null || true
-		ip link set dev "$ifname" up 2>/dev/null || true
-		start_remote_shells
+		# Only restart shells if port 23 is down
+		port_open 0017 || start_remote_shells
 	done
 ) &
 
-sleep 2
+sleep 1
 mdev -s
 
-log "block devices (name sizeMiB PARTNAME):"
-for b in /sys/class/block/*; do
-	name=${b##*/}
-	part=$(sed -n 's/^PARTNAME=//p' "$b/uevent" 2>/dev/null)
-	size=$(( $(cat "$b/size" 2>/dev/null || echo 0) / 2048 ))
-	case $name in
-	sd?|mmcblk?) log "  $name ${size}MiB" ;;
-	*) [ -n "$part" ] && [ "$size" -gt 64 ] && log "  $name ${size}MiB part=$part" ;;
-	esac
-done
-
-rootdev=
 rootdev=$(find_userdata) || true
 if [ -n "$rootdev" ]; then
 	echo "$rootdev" >/tmp/userdata_dev
 	log "userdata candidate: $rootdev"
 	diag_userdata "$rootdev"
 	try_mount_ro "$rootdev" || true
-else
-	log "no userdata partition found by PARTNAME"
 fi
 
-log "recovery ready — staying in initramfs (no switch_root)"
-log "host: telnet 172.16.42.1   OR   picocom -b 115200 /dev/ttyACM0"
+log "recovery ready — telnet 172.16.42.1  or  picocom -b 115200 /dev/ttyACM0"
 
 while :; do
 	if [ -c /dev/console ]; then
