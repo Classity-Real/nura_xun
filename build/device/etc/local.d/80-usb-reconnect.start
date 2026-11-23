@@ -33,7 +33,15 @@ restart_usb_dhcp() {
 }
 
 (
-	miss=0
+	# A separate recovery-only initramfs built specifically to debug USB
+	# connectivity on this device found that any automatic UDC unbind/rebind
+	# cycle -- even one gated on several consecutive non-"configured" reads,
+	# as this used to be -- reliably broke NCM ping until the next full power
+	# cycle (the dwc3 "request ... was not queued to epNin" failures seen in
+	# boot logs line up with this). Bind the gadget once at boot and never
+	# touch the UDC automatically again; only repair the IP address and
+	# restart dnsmasq, which don't touch dwc3/UDC state at all. An operator
+	# can still request the old rebind explicitly: touch /tmp/usb_fix.
 	while :; do
 		sleep 2
 		udc=$(ls /sys/class/udc 2>/dev/null | head -n1)
@@ -41,22 +49,19 @@ restart_usb_dhcp() {
 		state=$(cat "/sys/class/udc/$udc/state" 2>/dev/null)
 
 		if [ "$state" = "configured" ]; then
-			miss=0
 			# Do not trust UDC state alone: configured USB can coexist with a
 			# missing usb0 address. Repair it without needlessly rebinding.
 			ensure_usb_network || true
-			continue
 		fi
 
-		miss=$((miss + 1))
-		[ "$miss" -lt 3 ] && continue
-		miss=0
-		[ -d "$G" ] || continue
-
-		echo "xun-usb: UDC $udc state '$state'; rebinding gadget" >/dev/kmsg
-		echo "" >"$G/UDC" 2>/dev/null
-		sleep 0.2
-		echo "$udc" >"$G/UDC" 2>/dev/null
-		restart_usb_dhcp
+		if [ -e /tmp/usb_fix ]; then
+			rm -f /tmp/usb_fix
+			[ -d "$G" ] || continue
+			echo "xun-usb: explicit usb_fix request; rebinding gadget ($udc)" >/dev/kmsg
+			echo "" >"$G/UDC" 2>/dev/null
+			sleep 0.2
+			echo "$udc" >"$G/UDC" 2>/dev/null
+			restart_usb_dhcp
+		fi
 	done
 ) &

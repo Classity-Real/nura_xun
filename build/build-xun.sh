@@ -174,6 +174,59 @@ fi
         f.write(text)
 PYEOF
 
+# Harden the initramfs telnetd: plain `telnetd -l /bin/sh` can report success
+# and still never actually bind/listen on :23 (seen as "telnetd started" with
+# no :0017 entry in /proc/net/tcp) when /dev/ptmx or devpts isn't ready yet
+# for pty allocation. This showed up while debugging the exact mount-failure
+# bring-up shell this device kept landing in: the recovery shell's telnet
+# access can't be assumed to work just because telnetd didn't error.
+# Verified fix pattern (mknod /dev/ptmx if missing, telnetd -F backgrounded,
+# explicit /proc/net/tcp listen check, log either way) worked on a separate
+# recovery-only initramfs built specifically to debug this; port the same
+# fix into the real bring-up init's setup_net() rather than duplicating a
+# whole second init script.
+python3 - "$INIT" <<'PYEOF'
+import sys
+path = sys.argv[1]
+with open(path) as f:
+    text = f.read()
+marker = "# XUN_TELNETD_HARDEN_V1"
+if marker not in text:
+    old = '''	touch /tmp/udhcpd.leases
+	udhcpd /etc/udhcpd.conf
+	telnetd -l /bin/sh
+	log "network on $ifname: telnet 172.16.42.1"
+}'''
+    new = '''	touch /tmp/udhcpd.leases
+	pkill udhcpd 2>/dev/null
+	udhcpd /etc/udhcpd.conf
+	# XUN_TELNETD_HARDEN_V1: telnetd needs a pty to allocate for the shell it
+	# spawns. Without /dev/ptmx (devpts is already mounted earlier in this
+	# init) it can exit, or in some busybox builds report started without
+	# ever actually binding, leaving nothing listening on :23 despite no
+	# error. Run it backgrounded with -F, then verify via /proc/net/tcp{,6}
+	# (0017 hex = port 23) instead of trusting the exit status.
+	[ -c /dev/ptmx ] || mknod -m 666 /dev/ptmx c 5 2
+	pkill telnetd 2>/dev/null
+	( exec telnetd -F -p 23 -b 0.0.0.0 -l /bin/sh ) >/tmp/telnetd.log 2>&1 &
+	sleep 0.4
+	if grep -qE ':0017 ' /proc/net/tcp /proc/net/tcp6 2>/dev/null; then
+		log "network on $ifname: telnet 172.16.42.1 (telnetd listening on :23)"
+	else
+		log "network on $ifname: telnetd NOT listening: $(cat /tmp/telnetd.log 2>/dev/null)"
+	fi
+}'''
+    if text.count(old) != 1:
+        sys.exit("setup_net() telnetd tail not found exactly once in " + path)
+    text = text.replace(old, new, 1)
+    with open(path, "w") as f:
+        f.write(text)
+PYEOF
+grep -q "XUN_TELNETD_HARDEN_V1" "$INIT" || {
+	echo "failed to patch setup_net() telnetd hardening in $INIT" >&2
+	exit 1
+}
+
 # --- patches -------------------------------------------------------------
 if [ ! -e "$WORK/.patched" ]; then
 	for c in 650f459d 8b6545f7 f5a976a8 e127de2a; do
