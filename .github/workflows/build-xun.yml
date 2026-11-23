@@ -60,6 +60,13 @@ jobs:
           chmod +x scripts/sync-pmaports.sh || true
           bash scripts/sync-pmaports.sh
 
+      - name: Normalize FT8203 touch coordinates
+        working-directory: build
+        run: |
+          chmod +x fix-ft8203-coords.py || true
+          python3 fix-ft8203-coords.py kernel-touch/ft8203-spi.c
+          grep -n 'ABS_MT_POSITION' kernel-touch/ft8203-spi.c | head -8
+
       - name: Build kernel + boot image
         working-directory: build
         run: |
@@ -90,23 +97,22 @@ jobs:
           compression-level: 0
 
   install-image:
-    if: ${{ github.event_name == 'workflow_dispatch' && (inputs.target == 'userdata' || inputs.target == 'both') }}
+    if: ${{ github.event_name != 'workflow_dispatch' || inputs.target == 'userdata' || inputs.target == 'both' }}
     runs-on: namespace-profile-workshop
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Cache build/ downloads and rootfs work dir
+      - name: Cache build downloads
         uses: namespacelabs/nscloud-cache-action@v1
         with:
           path: |
-            build/rootfs-work
             build/downloads
+            build/rootfs-work
             build/tools
 
-      - name: Install build dependencies
+      - name: Install deps for install image
         run: |
-          set -eux
           sudo apt-get update
           sudo apt-get install -y \
             android-sdk-libsparse-utils \
