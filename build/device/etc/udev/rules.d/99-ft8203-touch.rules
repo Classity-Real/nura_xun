@@ -1,24 +1,17 @@
 # FocalTech FT8203 on Redmi Pad SE (xun)
-# Kernel reports landscape coords after CCW map. If the pointer is still
-# wrong, uncomment ONE matrix, reload udev, and re-test (no kernel rebuild).
+# Kernel reports native portrait coords; panel_orientation=left_side_up +
+# compositor handle landscape. Remaining error was a full 180° mirror
+# (left↔right and top↔bottom both inverted). Apply both-axis invert.
 #
-# identity (kernel already mapped):
-# ENV{LIBINPUT_CALIBRATION_MATRIX}="1 0 0 0 1 0"
-#
-# swap axes:
-# ENV{LIBINPUT_CALIBRATION_MATRIX}="0 1 0 1 0 0"
-#
-# invert X:
-# ENV{LIBINPUT_CALIBRATION_MATRIX}="-1 0 1 0 1 0"
-#
-# invert Y:
-# ENV{LIBINPUT_CALIBRATION_MATRIX}="1 0 0 0 -1 1"
-#
-# 90 CW:
-# ENV{LIBINPUT_CALIBRATION_MATRIX}="0 1 0 -1 0 1"
-#
-# 90 CCW (left_side_up style):
-# ENV{LIBINPUT_CALIBRATION_MATRIX}="0 -1 1 1 0 0"
+# Other matrices kept for quick on-device experiments:
+# identity:     "1 0 0 0 1 0"
+# swap axes:    "0 1 0 1 0 0"
+# invert X:     "-1 0 1 0 1 0"
+# invert Y:     "1 0 0 0 -1 1"
+# 90 CW:        "0 1 0 -1 0 1"
+# 90 CCW:       "0 -1 1 1 0 0"
+# 180° (active):"-1 0 1 0 -1 1"
 
 ACTION=="add|change", KERNEL=="event*", ATTRS{name}=="Focaltech FT8203*", \
-  ENV{ID_INPUT_TOUCHSCREEN}="1"
+  ENV{ID_INPUT_TOUCHSCREEN}="1", \
+  ENV{LIBINPUT_CALIBRATION_MATRIX}="-1 0 1 0 -1 1"
