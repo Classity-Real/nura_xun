@@ -2,9 +2,8 @@
 /*
  * FocalTech FT8203 touchscreen on SPI.
  *
- * Coordinates are reported in panel native portrait space (1200x1920)
- * with both axes inverted to cancel the 180° mirror seen with
- * panel_orientation=left_side_up. Do not also rotate in userspace.
+ * Coordinates are reported in the panel native portrait space (1200x1920).
+ * No rotation or inversion in-driver.
  */
 
 #include <linux/delay.h>
@@ -101,17 +100,13 @@ static void ft8203_report(struct ft8203 *ts, const u8 *buf)
 		touch = true;
 		input_mt_report_slot_state(input, MT_TOOL_FINGER, true);
 
-		/* scale to panel pixels */
+		/* pure native portrait */
 		x = x * 1200 / FT8203_RAW_WIDTH;
 		y = y * 1920 / FT8203_RAW_HEIGHT;
 		if (x > 1199)
 			x = 1199;
 		if (y > 1919)
 			y = 1919;
-
-		/* invert both axes (fixes 180° mirror with left_side_up) */
-		x = 1199 - x;
-		y = 1919 - y;
 
 		input_report_abs(input, ABS_MT_POSITION_X, x);
 		input_report_abs(input, ABS_MT_POSITION_Y, y);
@@ -192,7 +187,7 @@ static int ft8203_probe(struct spi_device *spi)
 	if (ret)
 		return ret;
 
-	dev_info(&spi->dev, "FT8203 touch ready (1200x1920, both axes inverted)\n");
+	dev_info(&spi->dev, "FT8203 touch ready (native portrait 1200x1920)\n");
 	return 0;
 }
 
