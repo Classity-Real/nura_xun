@@ -365,6 +365,44 @@ static void ft8203_load_firmware(struct ft8203 *ts)
 		"ft8203: no firmware variant loaded; touch will be uncalibrated\n");
 }
 
+/*
+ * Single-shot, low-risk recovery attempt: the failed firmware-load attempts
+ * (see ft8203_load_firmware() above, no longer called from probe()) wrote
+ * FT8203_REG_ROM_ENTER (0x55) up to 1800 times without ever completing a
+ * firmware write or sending the "start application" command. If that left
+ * the chip sitting in its ROM bootloader waiting for either, it should
+ * still respond to the one command that gets it back out: write
+ * FT8203_REG_START_APP (0x08) with no payload. Unlike ft8203_load_firmware(),
+ * this performs no reset pulse (so it doesn't risk re-triggering whatever
+ * caused the original problem) and no firmware write -- a single short SPI
+ * write plus one status read, using the same boot-mode framing. Logged
+ * either way; never fails probe().
+ */
+static void ft8203_try_exit_bootloader(struct ft8203 *ts)
+{
+	u8 state = 0;
+	int ret;
+
+	ret = ft8203_boot_write(ts, FT8203_REG_START_APP, NULL, 0);
+	if (ret) {
+		dev_info(&ts->spi->dev,
+			 "ft8203: start-app write failed (%d), chip likely not in bootloader\n",
+			 ret);
+		return;
+	}
+	msleep(100);
+
+	ret = ft8203_boot_read(ts, FT8203_REG_RUN_STATE, &state, 1);
+	if (!ret && state == FT8203_RUN_STATE_APP)
+		dev_info(&ts->spi->dev,
+			 "ft8203: chip acked start-app (state=0x%02x); was likely stuck in bootloader\n",
+			 state);
+	else
+		dev_info(&ts->spi->dev,
+			 "ft8203: start-app write sent, no bootloader ack (ret=%d state=0x%02x) -- chip probably wasn't in bootloader\n",
+			 ret, state);
+}
+
 static int ft8203_read(struct ft8203 *ts, u8 reg, u8 *buf, size_t len)
 {
 	u8 cmd[2] = { 0xF3, 0x01 };
@@ -507,7 +545,15 @@ static int ft8203_probe(struct spi_device *spi)
 	 * host) does not match how this chip actually responds here, so the
 	 * whole handshake needs re-deriving before it's safe to call. Leaving
 	 * the implementation in place below for whoever picks this back up.
+	 *
+	 * ft8203_try_exit_bootloader() is a single, low-risk recovery attempt
+	 * for a chip that may have been left sitting in that bootloader by
+	 * the failed attempts above (device confirmed: interrupt count does
+	 * not move at all when the screen is tapped, which did not happen
+	 * before firmware-loading was ever wired in). One short write, no
+	 * reset pulse, no firmware write.
 	 */
+	ft8203_try_exit_bootloader(ts);
 
 	input = devm_input_allocate_device(&spi->dev);
 	if (!input)
