@@ -495,11 +495,19 @@ static int ft8203_probe(struct spi_device *spi)
 		msleep(50);
 	}
 
-	/* Must happen before the IRQ is requested below: the chip has no
-	 * flash, so until this uploads firmware into its volatile PRAM it
-	 * has nothing valid to report.
+	/*
+	 * ft8203_load_firmware() is NOT called here. On real xun hardware it
+	 * reliably fails to enter the ROM bootloader at all (ft8203_enter_boot
+	 * returns -ENODEV for both firmware variants -- confirmed via dmesg),
+	 * and the repeated resets + unrecognized write/read attempts that
+	 * involves appear to leave the chip in a worse state afterward than
+	 * doing nothing: touch went from noisy/uncalibrated to completely
+	 * unresponsive once this was wired in. The ROM-bootloader command set
+	 * ported from the Tab S7 FE Lite driver (same silicon, different
+	 * host) does not match how this chip actually responds here, so the
+	 * whole handshake needs re-deriving before it's safe to call. Leaving
+	 * the implementation in place below for whoever picks this back up.
 	 */
-	ft8203_load_firmware(ts);
 
 	input = devm_input_allocate_device(&spi->dev);
 	if (!input)
