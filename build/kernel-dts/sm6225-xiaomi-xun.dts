@@ -188,7 +188,7 @@
 		output-low;
 	};
 
-	vol_up_n: vol-up_n-state {
+	vol_up_n: vol-up-n-state {
 		pins = "gpio5";
 		function = "normal";
 		power-source = <0>;
