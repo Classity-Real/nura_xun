@@ -538,12 +538,13 @@
 	phy-names = "usb2-phy";
 	maximum-speed = "high-speed";
 	/*
-	 * Dual-role. Default peripheral so NCM/ACM is available at boot.
-	 * Type-C connector graph + role-sync daemon switch to host for OTG.
+	 * Dual-role. Default to host so OTG (keyboard/mouse) works immediately
+	 * while touch is still broken. The Type-C graph + role-sync daemon can
+	 * still switch back to peripheral for NCM/ACM when needed.
 	 */
 	dr_mode = "otg";
 	usb-role-switch;
-	role-switch-default-mode = "peripheral";
+	role-switch-default-mode = "host";
 
 	port {
 		usb_dwc3_hs: endpoint {
