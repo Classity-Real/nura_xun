@@ -60,6 +60,13 @@ jobs:
           chmod +x scripts/sync-pmaports.sh || true
           bash scripts/sync-pmaports.sh
 
+      - name: Normalize FT8203 touch coordinates
+        working-directory: build
+        run: |
+          chmod +x fix-ft8203-coords.py || true
+          python3 fix-ft8203-coords.py kernel-touch/ft8203-spi.c
+          grep -n 'ABS_MT_POSITION' kernel-touch/ft8203-spi.c | head -8
+
       - name: Build kernel + boot image
         working-directory: build
         run: |
