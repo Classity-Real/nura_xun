@@ -429,7 +429,13 @@ static void ft8203_report(struct ft8203 *ts, const u8 *buf)
 		touch = true;
 		input_mt_report_slot_state(input, MT_TOOL_FINGER, true);
 
-		/* pure native portrait */
+		/*
+		 * CCW map into landscape chassis (1920x1200):
+		 *   X = portrait_Y
+		 *   Y = 1199 - portrait_X
+		 * (Panel's native space is portrait 1200x1920; the chassis
+		 * and the DTS's forced display rotation are landscape.)
+		 */
 		x = x * 1200 / FT8203_RAW_WIDTH;
 		y = y * 1920 / FT8203_RAW_HEIGHT;
 		if (x > 1199)
@@ -437,8 +443,8 @@ static void ft8203_report(struct ft8203 *ts, const u8 *buf)
 		if (y > 1919)
 			y = 1919;
 
-		input_report_abs(input, ABS_MT_POSITION_X, x);
-		input_report_abs(input, ABS_MT_POSITION_Y, y);
+		input_report_abs(input, ABS_MT_POSITION_X, y);
+		input_report_abs(input, ABS_MT_POSITION_Y, 1199 - x);
 	}
 
 	input_report_key(input, BTN_TOUCH, touch);
@@ -503,8 +509,9 @@ static int ft8203_probe(struct spi_device *spi)
 	input->id.bustype = BUS_SPI;
 	input->dev.parent = &spi->dev;
 
-	input_set_abs_params(input, ABS_MT_POSITION_X, 0, 1199, 0, 0);
-	input_set_abs_params(input, ABS_MT_POSITION_Y, 0, 1919, 0, 0);
+	/* Landscape after CCW map from native 1200x1920 panel space. */
+	input_set_abs_params(input, ABS_MT_POSITION_X, 0, 1919, 0, 0);
+	input_set_abs_params(input, ABS_MT_POSITION_Y, 0, 1199, 0, 0);
 	input_set_capability(input, EV_KEY, BTN_TOUCH);
 
 	ret = input_mt_init_slots(input, FT8203_MAX_TOUCH,
@@ -522,7 +529,7 @@ static int ft8203_probe(struct spi_device *spi)
 	if (ret)
 		return ret;
 
-	dev_info(&spi->dev, "FT8203 touch ready (native portrait 1200x1920)\n");
+	dev_info(&spi->dev, "FT8203 touch ready (CCW landscape 1920x1200)\n");
 	return 0;
 }
 
