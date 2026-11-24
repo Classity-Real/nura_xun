@@ -475,6 +475,13 @@
 };
 
 &tlmm {
+	panel_te_active: panel-te-active {
+		pins = "gpio81";
+		function = "mdp_vsync";
+		drive-strength = <2>;
+		bias-pull-down;
+	};
+
 	bq2589x_int_default: bq2589x-int-default-state {
 		pins = "gpio84";
 		function = "gpio";
