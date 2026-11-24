@@ -1,32 +1,69 @@
 #!/bin/sh
-# Synchronize the WUSB3801 Type-C data role with the DWC3 USB role switch.
-# The Type-C controller reports host/device in /sys/class/typec; DWC3 exposes
-# the switch separately through /sys/class/usb_role.
+# Synchronize WUSB3801 Type-C data role with DWC3, and free the UDC for
+# host mode by unbinding the configfs gadget when the role becomes host.
+# Rebind the gadget when we go back to device so NCM/ACM still works.
 PIDFILE=/run/xun-usb-role-sync.pid
+G=/sys/kernel/config/usb_gadget/g1
+LAST_ROLE=
+
 if [ -s "$PIDFILE" ] && kill -0 "$(cat "$PIDFILE")" 2>/dev/null; then
 	exit 0
 fi
 
+unbind_gadget() {
+	[ -d "$G" ] || return 0
+	udc=$(cat "$G/UDC" 2>/dev/null)
+	[ -n "$udc" ] || return 0
+	echo "xun-usb-role: unbinding gadget from $udc for host mode" >/dev/kmsg
+	echo "" >"$G/UDC" 2>/dev/null || true
+}
+
+bind_gadget() {
+	[ -d "$G" ] || return 0
+	cur=$(cat "$G/UDC" 2>/dev/null)
+	[ -z "$cur" ] || return 0
+	udc=$(ls /sys/class/udc 2>/dev/null | head -n1)
+	[ -n "$udc" ] || return 0
+	echo "xun-usb-role: rebinding gadget to $udc for device mode" >/dev/kmsg
+	echo "$udc" >"$G/UDC" 2>/dev/null || true
+}
+
 (
 	trap 'exit 0' TERM INT
 	while :; do
+		role=
 		for port in /sys/class/typec/port*; do
 			[ -r "$port/data_role" ] || continue
-			role=$(cat "$port/data_role" 2>/dev/null)
-			# Some kernels display both supported roles with the active one
-			# in brackets (for example: host [device]).
-			active=$(printf '%s\n' "$role" | sed -n 's/.*\[\([^]]*\)\].*/\1/p')
-			[ -n "$active" ] && role=$active
+			raw=$(cat "$port/data_role" 2>/dev/null)
+			# kernels show "host [device]" with the active role in brackets
+			active=$(printf '%s\n' "$raw" | sed -n 's/.*\[\([^]]*\)\].*/\1/p')
+			[ -n "$active" ] && role=$active || role=$raw
 			case "$role" in
-				host|device) ;;
-				*) continue ;;
+				host|device) break ;;
+				*) role= ;;
 			esac
+		done
+
+		# fallback: if nothing from typec, leave alone
+		[ -n "$role" ] || { sleep 1; continue; }
+
+		if [ "$role" != "$LAST_ROLE" ]; then
+			echo "xun-usb-role: data_role -> $role" >/dev/kmsg
+			if [ "$role" = "host" ]; then
+				unbind_gadget
+			fi
 			for switch in /sys/class/usb_role/*/role; do
 				[ -w "$switch" ] || continue
-				current=$(cat "$switch" 2>/dev/null)
-				[ "$current" = "$role" ] || printf '%s\n' "$role" >"$switch" 2>/dev/null
+				cur=$(cat "$switch" 2>/dev/null)
+				[ "$cur" = "$role" ] || printf '%s\n' "$role" >"$switch" 2>/dev/null
 			done
-		done
+			if [ "$role" = "device" ]; then
+				# short delay so DWC3 finishes role switch before rebind
+				sleep 0.3
+				bind_gadget
+			fi
+			LAST_ROLE=$role
+		fi
 		sleep 1
 	done
 ) >/dev/null 2>&1 &
