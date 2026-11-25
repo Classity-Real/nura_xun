@@ -570,7 +570,7 @@
  * Touch: FocalTech FT8203 on SPI0, chip select 0.
  * IRQ GPIO80, reset GPIO86, from the stock qupv3_se0_spi node.
  *
- * NOTE: this node (and the ts_int_*/ts_reset_* pinctrl states below) was
+ * NOTE: this node (and the ts_int_ and ts_reset_ pinctrl states below) was
  * accidentally dropped by commit b6ef02c ("restore full board file with
  * Type-C <-> DWC3 graph for OTG"), which truncated the last ~156 lines of
  * this file while trying to fix a different truncation. That silently
