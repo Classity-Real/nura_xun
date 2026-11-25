@@ -86,7 +86,30 @@ struct ft8203 {
 	u8 dbg_buf[64];
 	size_t dbg_len;
 	int dbg_ret;
+
+	/* Relative "mouse simulation" mode state -- see mouse_mode param. */
+	int prev_x, prev_y;
+	bool have_prev;
+	bool btn_down;
 };
+
+/*
+ * Report touch as relative pointer movement (REL_X/REL_Y + BTN_LEFT) instead
+ * of absolute touchscreen coordinates (ABS_MT_POSITION_X/Y). A swipe moves
+ * the cursor rather than needing exact position-to-pixel mapping, so this
+ * sidesteps rotation/calibration entirely -- useful for confirming the chip
+ * is reporting usable deltas at all before chasing exact absolute alignment.
+ * Runtime-switchable, no rebuild needed:
+ *   echo 1 > /sys/module/ft8203_spi/parameters/mouse_mode
+ *   echo 0 > /sys/module/ft8203_spi/parameters/mouse_mode
+ * Also settable at boot via the kernel command line: ft8203_spi.mouse_mode=1
+ * (wired up in build-xun.sh via the workflow's "Touch mode" input).
+ */
+static bool mouse_mode;
+module_param(mouse_mode, bool, 0644);
+MODULE_PARM_DESC(mouse_mode,
+		  "report touch as relative mouse movement (REL_X/REL_Y + BTN_LEFT) "
+		  "instead of absolute touchscreen coordinates");
 
 /* CRC-16 (reflected CCITT, poly 0x8408), bit-by-bit over 8-bit SPI read
  * bytes. Used to validate boot-mode read replies against their trailing
@@ -442,6 +465,8 @@ static void ft8203_report(struct ft8203 *ts, const u8 *buf)
 	struct input_dev *input = ts->input;
 	unsigned int points = buf[1] & 0x0f;
 	bool touch = false;
+	bool mouse = READ_ONCE(mouse_mode);
+	bool mouse_point_seen = false;
 	unsigned int i;
 
 	if (points > FT8203_MAX_TOUCH)
@@ -452,14 +477,19 @@ static void ft8203_report(struct ft8203 *ts, const u8 *buf)
 		unsigned int event = p[0] >> 6;
 		unsigned int id = p[2] >> 4;
 		unsigned int x, y;
+		int lx, ly;
 
 		if (id >= FT8203_MAX_TOUCH)
 			break;
 
-		input_mt_slot(input, id);
+		if (!mouse) {
+			input_mt_slot(input, id);
 
-		if (event == 1 || (p[0] & 0x10)) {
-			input_mt_report_slot_state(input, MT_TOOL_FINGER, false);
+			if (event == 1 || (p[0] & 0x10)) {
+				input_mt_report_slot_state(input, MT_TOOL_FINGER, false);
+				continue;
+			}
+		} else if (event == 1 || (p[0] & 0x10)) {
 			continue;
 		}
 		if (event != 0 && event != 2)
@@ -471,7 +501,6 @@ static void ft8203_report(struct ft8203 *ts, const u8 *buf)
 			continue;
 
 		touch = true;
-		input_mt_report_slot_state(input, MT_TOOL_FINGER, true);
 
 		/*
 		 * CCW map into landscape chassis (1920x1200):
@@ -486,13 +515,51 @@ static void ft8203_report(struct ft8203 *ts, const u8 *buf)
 			x = 1199;
 		if (y > 1919)
 			y = 1919;
+		lx = y;
+		ly = 1199 - (int)x;
 
-		input_report_abs(input, ABS_MT_POSITION_X, y);
-		input_report_abs(input, ABS_MT_POSITION_Y, 1199 - x);
+		if (!mouse) {
+			input_mt_report_slot_state(input, MT_TOOL_FINGER, true);
+			input_report_abs(input, ABS_MT_POSITION_X, lx);
+			input_report_abs(input, ABS_MT_POSITION_Y, ly);
+			continue;
+		}
+
+		/*
+		 * Mouse-simulation mode: only the first touch point drives the
+		 * cursor (relative deltas), everything else is ignored. A
+		 * fresh touch-down just anchors the start position -- no jump
+		 * on first contact.
+		 */
+		if (mouse_point_seen)
+			continue;
+		mouse_point_seen = true;
+
+		if (ts->have_prev) {
+			int dx = lx - ts->prev_x;
+			int dy = ly - ts->prev_y;
+
+			if (dx)
+				input_report_rel(input, REL_X, dx);
+			if (dy)
+				input_report_rel(input, REL_Y, dy);
+		}
+		ts->prev_x = lx;
+		ts->prev_y = ly;
+		ts->have_prev = true;
 	}
 
-	input_report_key(input, BTN_TOUCH, touch);
-	input_mt_sync_frame(input);
+	if (mouse) {
+		if (touch != ts->btn_down) {
+			input_report_key(input, BTN_LEFT, touch);
+			ts->btn_down = touch;
+		}
+		if (!touch)
+			ts->have_prev = false;
+	} else {
+		input_report_key(input, BTN_TOUCH, touch);
+		input_mt_sync_frame(input);
+	}
 	input_sync(input);
 }
 
@@ -761,6 +828,13 @@ static int ft8203_probe(struct spi_device *spi)
 	input_set_abs_params(input, ABS_MT_POSITION_X, 0, 1919, 0, 0);
 	input_set_abs_params(input, ABS_MT_POSITION_Y, 0, 1199, 0, 0);
 	input_set_capability(input, EV_KEY, BTN_TOUCH);
+
+	/* Always registered regardless of the mouse_mode param's current
+	 * value, since that param is runtime-switchable (see ft8203_report).
+	 */
+	input_set_capability(input, EV_REL, REL_X);
+	input_set_capability(input, EV_REL, REL_Y);
+	input_set_capability(input, EV_KEY, BTN_LEFT);
 
 	ret = input_mt_init_slots(input, FT8203_MAX_TOUCH,
 				  INPUT_MT_DIRECT | INPUT_MT_DROP_UNUSED);

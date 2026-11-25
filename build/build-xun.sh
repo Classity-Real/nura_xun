@@ -337,6 +337,19 @@ fi
 
 # --- board files ---------------------------------------------------------
 cp "$ROOT/kernel-dts/sm6225-xiaomi-xun.dts" "$SRC/$DTS_DIR/"
+
+# Optional FT8203 "mouse simulation" touch-reporting mode (relative
+# REL_X/REL_Y + BTN_LEFT instead of absolute touchscreen coordinates).
+# Selected via the workflow_dispatch "Touch mode" input; the driver also
+# exposes this as a runtime-switchable module param
+# (/sys/module/ft8203_spi/parameters/mouse_mode), so this just sets the
+# boot-time default.
+if [ "${TOUCH_MODE:-absolute}" = "mouse" ]; then
+	echo "Enabling ft8203_spi.mouse_mode=1 in bootargs (TOUCH_MODE=mouse)"
+	sed -i 's/\(bootargs = "[^"]*\)"/\1 ft8203_spi.mouse_mode=1"/' \
+		"$SRC/$DTS_DIR/sm6225-xiaomi-xun.dts"
+fi
+
 cp "$ROOT"/kernel-panel/panel-xiaomi-m84-*.c "$SRC/drivers/gpu/drm/panel/"
 
 PANEL=$SRC/drivers/gpu/drm/panel

@@ -11,6 +11,13 @@ on:
           - boot
           - userdata
         default: both
+      touch_mode:
+        description: "FT8203 touch reporting mode"
+        type: choice
+        options:
+          - absolute
+          - mouse
+        default: absolute
   push:
     paths:
       - "build/**"
@@ -62,6 +69,8 @@ jobs:
 
       - name: Build kernel + boot image
         working-directory: build
+        env:
+          TOUCH_MODE: ${{ inputs.touch_mode || 'absolute' }}
         run: |
           chmod +x build-xun.sh || true
           bash build-xun.sh
@@ -80,14 +89,6 @@ jobs:
         with:
           name: boot-xun-img
           path: build/out/boot-xun.img
-
-      - name: Upload boot image (Namespace mirror)
-        if: success()
-        uses: namespace-actions/upload-artifact@v1
-        with:
-          name: boot-xun-img
-          path: build/out/boot-xun.img
-          compression-level: 0
 
   install-image:
     if: ${{ github.event_name != 'workflow_dispatch' || inputs.target == 'userdata' || inputs.target == 'both' }}
@@ -166,11 +167,3 @@ jobs:
         with:
           name: xun-install-img-sparse
           path: build/out/xun-install.img.sparse
-
-      - name: Upload install image (Namespace mirror)
-        if: success()
-        uses: namespace-actions/upload-artifact@v1
-        with:
-          name: xun-install-img-sparse
-          path: build/out/xun-install.img.sparse
-          compression-level: 0
