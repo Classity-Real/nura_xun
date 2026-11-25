@@ -28,6 +28,7 @@
 #include <linux/of.h>
 #include <linux/regulator/consumer.h>
 #include <linux/spi/spi.h>
+#include <linux/sysfs.h>
 #include <linux/unaligned.h>
 
 #define FT8203_MAX_TOUCH	10
@@ -80,6 +81,11 @@ struct ft8203 {
 	bool gesture;
 	struct delayed_work follower_work;
 	struct device_link *panel_link;
+
+	/* Raw-command sysfs debug interface (see ft8203_debug_group below). */
+	u8 dbg_buf[64];
+	size_t dbg_len;
+	int dbg_ret;
 };
 
 /* CRC-16 (reflected CCITT, poly 0x8408), bit-by-bit over 8-bit SPI read
@@ -506,6 +512,189 @@ static irqreturn_t ft8203_irq(int irq, void *dev_id)
 	return IRQ_HANDLED;
 }
 
+/*
+ * Raw-command sysfs debug interface. Lets userspace try SPI commands/
+ * addresses directly over SSH/telnet without a kernel rebuild per attempt --
+ * every protocol guess so far has cost a full build+flash+reboot cycle just
+ * to find out it was wrong. After this lands once, further iteration is:
+ *
+ *   echo "55" > boot_write          # write FT8203_REG_ROM_ENTER, no payload
+ *   echo "90 2" > boot_read; cat boot_read   # read 2 bytes from 0x90
+ *   echo 1 > reset                  # pulse the reset GPIO
+ *   cat enter_boot                  # run ft8203_enter_boot(), see the result
+ *
+ * boot_write/boot_read use the ROM-bootloader framing (ft8203_boot_write/
+ * read); app_write/app_read use the steady-state 0xF3-prefixed framing
+ * (ft8203_write/read) that ft8203_irq() uses for touch reports.
+ */
+static ssize_t ft8203_hex_bytes_store(const char *buf, size_t count,
+				       u8 *first, u8 *rest, size_t rest_max,
+				       size_t *rest_len)
+{
+	unsigned int val;
+	int n, consumed = 0;
+	size_t i = 0;
+
+	if (sscanf(buf, "%x%n", &val, &n) != 1)
+		return -EINVAL;
+	*first = val;
+	consumed = n;
+
+	while (i < rest_max) {
+		int used;
+
+		if (sscanf(buf + consumed, "%x%n", &val, &used) != 1)
+			break;
+		rest[i++] = val;
+		consumed += used;
+	}
+	*rest_len = i;
+	return count;
+}
+
+static ssize_t boot_write_store(struct device *dev, struct device_attribute *a,
+				 const char *buf, size_t count)
+{
+	struct ft8203 *ts = spi_get_drvdata(to_spi_device(dev));
+	u8 addr, payload[61];
+	size_t len;
+	ssize_t ret = ft8203_hex_bytes_store(buf, count, &addr, payload,
+					     sizeof(payload), &len);
+	if (ret < 0)
+		return ret;
+	ts->dbg_ret = ft8203_boot_write(ts, addr, len ? payload : NULL, len);
+	dev_info(dev, "ft8203-dbg: boot_write(0x%02x, len=%zu) = %d\n",
+		 addr, len, ts->dbg_ret);
+	return count;
+}
+static DEVICE_ATTR_WO(boot_write);
+
+static ssize_t boot_read_store(struct device *dev, struct device_attribute *a,
+				const char *buf, size_t count)
+{
+	struct ft8203 *ts = spi_get_drvdata(to_spi_device(dev));
+	unsigned int addr, len;
+
+	if (sscanf(buf, "%x %u", &addr, &len) != 2 || len > sizeof(ts->dbg_buf))
+		return -EINVAL;
+	ts->dbg_len = len;
+	ts->dbg_ret = ft8203_boot_read(ts, addr, ts->dbg_buf, len);
+	dev_info(dev, "ft8203-dbg: boot_read(0x%02x, len=%u) = %d\n",
+		 addr, len, ts->dbg_ret);
+	return count;
+}
+static ssize_t boot_read_show(struct device *dev, struct device_attribute *a,
+			       char *buf)
+{
+	struct ft8203 *ts = spi_get_drvdata(to_spi_device(dev));
+	ssize_t off = 0;
+	size_t i;
+
+	off += sysfs_emit_at(buf, off, "ret=%d data=", ts->dbg_ret);
+	for (i = 0; i < ts->dbg_len; i++)
+		off += sysfs_emit_at(buf, off, "%02x ", ts->dbg_buf[i]);
+	off += sysfs_emit_at(buf, off, "\n");
+	return off;
+}
+static DEVICE_ATTR_RW(boot_read);
+
+static ssize_t app_write_store(struct device *dev, struct device_attribute *a,
+				const char *buf, size_t count)
+{
+	struct ft8203 *ts = spi_get_drvdata(to_spi_device(dev));
+	u8 reg, payload[61];
+	size_t len;
+	ssize_t ret = ft8203_hex_bytes_store(buf, count, &reg, payload,
+					     sizeof(payload), &len);
+	if (ret < 0)
+		return ret;
+	ts->dbg_ret = ft8203_write(ts, reg, payload, len);
+	dev_info(dev, "ft8203-dbg: app_write(0x%02x, len=%zu) = %d\n",
+		 reg, len, ts->dbg_ret);
+	return count;
+}
+static DEVICE_ATTR_WO(app_write);
+
+static ssize_t app_read_store(struct device *dev, struct device_attribute *a,
+			       const char *buf, size_t count)
+{
+	struct ft8203 *ts = spi_get_drvdata(to_spi_device(dev));
+	unsigned int reg, len;
+
+	if (sscanf(buf, "%x %u", &reg, &len) != 2 || len > sizeof(ts->dbg_buf))
+		return -EINVAL;
+	ts->dbg_len = len;
+	ts->dbg_ret = ft8203_read(ts, reg, ts->dbg_buf, len);
+	dev_info(dev, "ft8203-dbg: app_read(0x%02x, len=%u) = %d\n",
+		 reg, len, ts->dbg_ret);
+	return count;
+}
+static ssize_t app_read_show(struct device *dev, struct device_attribute *a,
+			      char *buf)
+{
+	struct ft8203 *ts = spi_get_drvdata(to_spi_device(dev));
+	ssize_t off = 0;
+	size_t i;
+
+	off += sysfs_emit_at(buf, off, "ret=%d data=", ts->dbg_ret);
+	for (i = 0; i < ts->dbg_len; i++)
+		off += sysfs_emit_at(buf, off, "%02x ", ts->dbg_buf[i]);
+	off += sysfs_emit_at(buf, off, "\n");
+	return off;
+}
+static DEVICE_ATTR_RW(app_read);
+
+static ssize_t reset_store(struct device *dev, struct device_attribute *a,
+			    const char *buf, size_t count)
+{
+	struct ft8203 *ts = spi_get_drvdata(to_spi_device(dev));
+
+	if (ts->reset_gpio) {
+		gpiod_set_value_cansleep(ts->reset_gpio, 1);
+		usleep_range(10000, 11000);
+		gpiod_set_value_cansleep(ts->reset_gpio, 0);
+		msleep(50);
+	}
+	dev_info(dev, "ft8203-dbg: reset pulsed\n");
+	return count;
+}
+static DEVICE_ATTR_WO(reset);
+
+static ssize_t enter_boot_show(struct device *dev, struct device_attribute *a,
+				char *buf)
+{
+	struct ft8203 *ts = spi_get_drvdata(to_spi_device(dev));
+	int ret = ft8203_enter_boot(ts);
+
+	return sysfs_emit(buf, "ft8203_enter_boot() = %d\n", ret);
+}
+static DEVICE_ATTR_RO(enter_boot);
+
+static ssize_t exit_boot_show(struct device *dev, struct device_attribute *a,
+			       char *buf)
+{
+	struct ft8203 *ts = spi_get_drvdata(to_spi_device(dev));
+
+	ft8203_try_exit_bootloader(ts);
+	return sysfs_emit(buf, "see dmesg for result\n");
+}
+static DEVICE_ATTR_RO(exit_boot);
+
+static struct attribute *ft8203_debug_attrs[] = {
+	&dev_attr_boot_write.attr,
+	&dev_attr_boot_read.attr,
+	&dev_attr_app_write.attr,
+	&dev_attr_app_read.attr,
+	&dev_attr_reset.attr,
+	&dev_attr_enter_boot.attr,
+	&dev_attr_exit_boot.attr,
+	NULL,
+};
+static const struct attribute_group ft8203_debug_group = {
+	.name = "ft8203_debug",
+	.attrs = ft8203_debug_attrs,
+};
+
 static int ft8203_probe(struct spi_device *spi)
 {
 	struct ft8203 *ts;
@@ -520,6 +709,11 @@ static int ft8203_probe(struct spi_device *spi)
 	ts->spi = spi;
 	mutex_init(&ts->lock);
 	spi_set_drvdata(spi, ts);
+
+	ret = sysfs_create_group(&spi->dev.kobj, &ft8203_debug_group);
+	if (ret)
+		dev_warn(&spi->dev,
+			 "ft8203: failed to create debug sysfs group (%d)\n", ret);
 
 	ts->reset_gpio = devm_gpiod_get_optional(&spi->dev, "reset",
 						 GPIOD_OUT_HIGH);
