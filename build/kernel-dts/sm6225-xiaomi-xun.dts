@@ -545,13 +545,20 @@
 	phy-names = "usb2-phy";
 	maximum-speed = "high-speed";
 	/*
-	 * Dual-role. Default to host so OTG (keyboard/mouse) works immediately
-	 * while touch is still broken. The Type-C graph + role-sync daemon can
-	 * still switch back to peripheral for NCM/ACM when needed.
+	 * Dual-role. Defaulting to host mode (so OTG keyboard/mouse worked
+	 * immediately) meant the dwc3 never came up as a USB gadget at boot
+	 * at all -- no ACM serial console, no NCM network interface -- which
+	 * cut off every way of getting onto the device over USB (picocom,
+	 * telnet, SSH all dead simultaneously, with zero USB enumeration
+	 * even showing up on the host end). Touch is responding again now,
+	 * so that workaround's original justification is gone; default back
+	 * to peripheral so USB debug access works again. The Type-C graph +
+	 * role-sync daemon can still switch to host mode when an actual OTG
+	 * accessory (keyboard/mouse) is detected.
 	 */
 	dr_mode = "otg";
 	usb-role-switch;
-	role-switch-default-mode = "host";
+	role-switch-default-mode = "peripheral";
 };
 
 /* SoC already provides ports/port@0/endpoint as usb_dwc3_hs — just wire it */
