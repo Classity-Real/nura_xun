@@ -50,6 +50,23 @@
 #define FT8203_REG_ROM_ID		0x90
 #define FT8203_ROM_ID0			0x82
 #define FT8203_ROM_ID1			0x01
+
+/*
+ * FocalTech's actual production driver (focaltech_touch/focaltech_flash.c,
+ * from Google's Nest kernel tree -- real vendor code, not reverse
+ * engineered) arms bootloader mode with a two-write unlock sequence before
+ * anything else: write 0xAA then 0x55 to the chip's soft-reset/upgrade
+ * register, each followed by a short settle. This 0xFC/0xAA/0x55 sequence
+ * is the one widely documented across many FocalTech touch controller
+ * generations, not something specific to one chip family. Our previous
+ * ft8203_enter_boot() only ever wrote bare FT8203_REG_ROM_ENTER (0x55) with
+ * no payload and polled for the ROM ID -- it never sent this unlock
+ * sequence at all, which may be why entry never actually succeeded on real
+ * xun hardware (confirmed via dmesg: ft8203_enter_boot returned -ENODEV).
+ */
+#define FT8203_REG_SOFT_RESET		0xFC
+#define FT8203_SOFT_RESET_AA		0xAA
+#define FT8203_SOFT_RESET_55		0x55
 #define FT8203_REG_PRAM_ADDR		0xad
 #define FT8203_REG_PRAM_DATA		0xae
 #define FT8203_PRAM_CHUNK		4092
@@ -229,18 +246,35 @@ static int ft8203_boot_read(struct ft8203 *ts, u8 addr, u8 *buf, u16 len)
 	return ret;
 }
 
+/* Defined further down; forward-declared so ft8203_enter_boot() can share
+ * the same vendor-matched reset/settle timing as probe() and the debug
+ * "reset" sysfs attribute instead of its own much shorter one.
+ */
+static void ft8203_reset_pulse(struct ft8203 *ts);
+
 static int ft8203_enter_boot(struct ft8203 *ts)
 {
 	int attempt, poll;
 	u8 id[2];
+	u8 unlock;
 
 	for (attempt = 0; attempt < 30; attempt++) {
-		if (ts->reset_gpio) {
-			gpiod_set_value_cansleep(ts->reset_gpio, 1);
-			usleep_range(1000, 2000);
-			gpiod_set_value_cansleep(ts->reset_gpio, 0);
-		}
-		msleep(8);
+		ft8203_reset_pulse(ts);
+
+		/*
+		 * FocalTech's own unlock sequence: write 0xAA then 0x55 to
+		 * the soft-reset/upgrade register, each followed by a short
+		 * settle, before anything else. See the comment above
+		 * FT8203_REG_SOFT_RESET.
+		 */
+		unlock = FT8203_SOFT_RESET_AA;
+		if (ft8203_boot_write(ts, FT8203_REG_SOFT_RESET, &unlock, 1))
+			goto next_attempt;
+		msleep(10);
+		unlock = FT8203_SOFT_RESET_55;
+		if (ft8203_boot_write(ts, FT8203_REG_SOFT_RESET, &unlock, 1))
+			goto next_attempt;
+		msleep(10);
 
 		for (poll = 0; poll < 30; poll++) {
 			if (ft8203_boot_write(ts, FT8203_REG_ROM_ENTER, NULL, 0))
@@ -803,6 +837,26 @@ static ssize_t exit_boot_show(struct device *dev, struct device_attribute *a,
 }
 static DEVICE_ATTR_RO(exit_boot);
 
+/*
+ * Manual trigger only -- NOT called automatically in probe(). The last time
+ * this ran unconditionally at every boot it regressed touch from
+ * noisy/ghost to completely unresponsive, before the real root cause (the
+ * missing devicetree node, then the dwc3 default-host-mode bug) was found.
+ * Now that enter_boot has the real FocalTech unlock sequence, this lets it
+ * be tried interactively -- cat enter_boot first to confirm the ROM ID
+ * actually acks, then cat load_firmware -- without needing a rebuild+flash
+ * per attempt.
+ */
+static ssize_t load_firmware_show(struct device *dev,
+				   struct device_attribute *a, char *buf)
+{
+	struct ft8203 *ts = spi_get_drvdata(to_spi_device(dev));
+
+	ft8203_load_firmware(ts);
+	return sysfs_emit(buf, "see dmesg for result\n");
+}
+static DEVICE_ATTR_RO(load_firmware);
+
 static struct attribute *ft8203_debug_attrs[] = {
 	&dev_attr_boot_write.attr,
 	&dev_attr_boot_read.attr,
@@ -811,6 +865,7 @@ static struct attribute *ft8203_debug_attrs[] = {
 	&dev_attr_reset.attr,
 	&dev_attr_enter_boot.attr,
 	&dev_attr_exit_boot.attr,
+	&dev_attr_load_firmware.attr,
 	NULL,
 };
 static const struct attribute_group ft8203_debug_group = {
