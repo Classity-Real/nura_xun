@@ -75,8 +75,8 @@ struct ft8203 {
 	struct input_dev *input;
 	struct input_dev *wake_input;
 	struct gpio_desc *reset_gpio;
-	struct regulator *vdd;
-	struct regulator *vcc_i2c;
+	struct regulator *vdd;	/* optional AVDD-style rail, not yet in DT */
+	struct regulator *vcc;	/* "vcc-supply" -- IO rail, pm6125_l9, always-on */
 	struct mutex lock;
 	bool gesture;
 	struct delayed_work follower_work;
@@ -460,6 +460,56 @@ static int ft8203_write(struct ft8203 *ts, u8 reg, const u8 *buf, size_t len)
 	return spi_sync(ts->spi, &msg);
 }
 
+/*
+ * Quick "is anything alive on the bus" check, logged clearly so liveness
+ * doesn't have to be inferred from /proc/interrupts after the fact. Reads
+ * the run-state register (0xa3) in app-mode framing; FT8203_RUN_STATE_APP
+ * (0x82) means the application firmware is up and scanning. Any other
+ * non-error value still means *something* answered on SPI, which rules
+ * out a dead/unpowered/miswired chip even if the value isn't the expected
+ * one yet.
+ */
+static void ft8203_log_presence(struct ft8203 *ts)
+{
+	u8 state = 0xff;
+	int ret = ft8203_read(ts, FT8203_REG_RUN_STATE, &state, 1);
+
+	if (ret)
+		dev_info(&ts->spi->dev,
+			 "ft8203: presence check failed (%d) -- chip not answering on SPI\n",
+			 ret);
+	else if (state == FT8203_RUN_STATE_APP)
+		dev_info(&ts->spi->dev,
+			 "ft8203: presence check ok, run_state=0x%02x (app running)\n",
+			 state);
+	else
+		dev_info(&ts->spi->dev,
+			 "ft8203: chip answered but run_state=0x%02x (not the expected 0x%02x)\n",
+			 state, FT8203_RUN_STATE_APP);
+}
+
+/*
+ * Reset-pulse + settle timing, unified across every call site (probe, the
+ * sysfs "reset" debug attribute). Matches the pattern used by FocalTech's
+ * own vendor drivers for sibling chips in the same family
+ * (focaltech_touch_ft8201, ft8716/focaltech_core.c): assert reset, release
+ * it, then settle for ~200ms before the first bus transaction, plus
+ * another ~200ms "soft reset" settle on top of that. We were previously
+ * only waiting 50ms total here, well short of what FocalTech's own
+ * drivers rely on.
+ */
+static void ft8203_reset_pulse(struct ft8203 *ts)
+{
+	if (!ts->reset_gpio)
+		return;
+
+	gpiod_set_value_cansleep(ts->reset_gpio, 1);
+	usleep_range(10000, 11000);
+	gpiod_set_value_cansleep(ts->reset_gpio, 0);
+	msleep(200);
+	msleep(200);
+}
+
 static void ft8203_report(struct ft8203 *ts, const u8 *buf)
 {
 	struct input_dev *input = ts->input;
@@ -716,12 +766,7 @@ static ssize_t reset_store(struct device *dev, struct device_attribute *a,
 {
 	struct ft8203 *ts = spi_get_drvdata(to_spi_device(dev));
 
-	if (ts->reset_gpio) {
-		gpiod_set_value_cansleep(ts->reset_gpio, 1);
-		usleep_range(10000, 11000);
-		gpiod_set_value_cansleep(ts->reset_gpio, 0);
-		msleep(50);
-	}
+	ft8203_reset_pulse(ts);
 	dev_info(dev, "ft8203-dbg: reset pulsed\n");
 	return count;
 }
@@ -782,17 +827,50 @@ static int ft8203_probe(struct spi_device *spi)
 		dev_warn(&spi->dev,
 			 "ft8203: failed to create debug sysfs group (%d)\n", ret);
 
+	/*
+	 * Power the chip's rails before touching reset/SPI at all -- this is
+	 * the order FocalTech's own vendor drivers use for sibling chips
+	 * (focaltech_touch_ft8201, ft8716/focaltech_core.c): enable supplies
+	 * first, *then* run the reset sequence. "vcc" (pm6125_l9, the panel's
+	 * I/O rail) is already regulator-always-on in our DT so this mostly
+	 * just makes the dependency explicit, but "vdd" is requested as
+	 * optional in case a dedicated AVDD-style rail gets added to the DT
+	 * later -- we couldn't confirm one from the hardware we have access
+	 * to, so it's not wired up in the DTS yet.
+	 */
+	ts->vcc = devm_regulator_get(&spi->dev, "vcc");
+	if (IS_ERR(ts->vcc))
+		return PTR_ERR(ts->vcc);
+	ret = regulator_enable(ts->vcc);
+	if (ret)
+		return ret;
+
+	ts->vdd = devm_regulator_get_optional(&spi->dev, "vdd");
+	if (IS_ERR(ts->vdd)) {
+		if (PTR_ERR(ts->vdd) != -ENODEV)
+			return PTR_ERR(ts->vdd);
+		ts->vdd = NULL;
+	} else {
+		ret = regulator_enable(ts->vdd);
+		if (ret)
+			return ret;
+		dev_info(&spi->dev, "ft8203: vdd rail found in DT and enabled\n");
+	}
+	usleep_range(1000, 2000);
+
 	ts->reset_gpio = devm_gpiod_get_optional(&spi->dev, "reset",
 						 GPIOD_OUT_HIGH);
 	if (IS_ERR(ts->reset_gpio))
 		return PTR_ERR(ts->reset_gpio);
 
-	if (ts->reset_gpio) {
-		gpiod_set_value_cansleep(ts->reset_gpio, 1);
-		usleep_range(10000, 11000);
-		gpiod_set_value_cansleep(ts->reset_gpio, 0);
-		msleep(50);
-	}
+	ft8203_reset_pulse(ts);
+
+	/*
+	 * Confirm (and log) whether the chip answers on SPI at all right
+	 * after the new, longer reset settle -- rather than only inferring
+	 * liveness later from /proc/interrupts.
+	 */
+	ft8203_log_presence(ts);
 
 	/*
 	 * ft8203_load_firmware() is NOT called here. On real xun hardware it

@@ -565,3 +565,65 @@
 	vdda-phy-dpdm-supply = <&pm6125_l15>;
 	status = "okay";
 };
+
+/*
+ * Touch: FocalTech FT8203 on SPI0, chip select 0.
+ * IRQ GPIO80, reset GPIO86, from the stock qupv3_se0_spi node.
+ *
+ * NOTE: this node (and the ts_int_*/ts_reset_* pinctrl states below) was
+ * accidentally dropped by commit b6ef02c ("restore full board file with
+ * Type-C <-> DWC3 graph for OTG"), which truncated the last ~156 lines of
+ * this file while trying to fix a different truncation. That silently
+ * removed touch from the devicetree entirely -- no node, no probe, no
+ * IRQ ever requested -- which is the real explanation for every "touch
+ * completely dead" symptom since that commit landed, independent of any
+ * driver-side firmware/timing issue.
+ */
+&spi0 {
+	status = "okay";
+
+	touchscreen@0 {
+		compatible = "focaltech,ft8203";
+		reg = <0>;
+		spi-max-frequency = <10000000>;
+		interrupt-parent = <&tlmm>;
+		interrupts = <80 IRQ_TYPE_EDGE_FALLING>;
+		reset-gpios = <&tlmm 86 GPIO_ACTIVE_LOW>;
+		firmware-name = "focaltech_ts_fw_boe_ft8203.bin";
+		pinctrl-names = "default";
+		pinctrl-0 = <&ts_int_active &ts_reset_active>;
+		vcc-supply = <&pm6125_l9>;
+		/* follow the panel so gesture mode tracks the display state */
+		panel = <&panel>;
+	};
+};
+
+&tlmm {
+	ts_int_active: ts-int-active-state {
+		pins = "gpio80";
+		function = "gpio";
+		drive-strength = <8>;
+		bias-pull-up;
+	};
+
+	ts_int_suspend: ts-int-suspend-state {
+		pins = "gpio80";
+		function = "gpio";
+		drive-strength = <2>;
+		bias-pull-down;
+	};
+
+	ts_reset_active: ts-reset-active-state {
+		pins = "gpio86";
+		function = "gpio";
+		drive-strength = <8>;
+		bias-pull-up;
+	};
+
+	ts_reset_suspend: ts-reset-suspend-state {
+		pins = "gpio86";
+		function = "gpio";
+		drive-strength = <2>;
+		bias-pull-down;
+	};
+};
