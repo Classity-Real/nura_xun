@@ -88,6 +88,7 @@ struct ft8203 {
 	int dbg_ret;
 
 	/* Relative "mouse simulation" mode state -- see mouse_mode param. */
+	bool mouse;		/* snapshot of mouse_mode taken at probe time */
 	int prev_x, prev_y;
 	bool have_prev;
 	bool btn_down;
@@ -99,17 +100,27 @@ struct ft8203 {
  * the cursor rather than needing exact position-to-pixel mapping, so this
  * sidesteps rotation/calibration entirely -- useful for confirming the chip
  * is reporting usable deltas at all before chasing exact absolute alignment.
- * Runtime-switchable, no rebuild needed:
+ *
+ * This is a BOOT-TIME choice, not a live runtime switch: the input device's
+ * registered capabilities are fixed in probe() to match whichever mode is
+ * selected at that point, because a single input device advertising BOTH
+ * absolute multitouch (ABS_MT_*) and relative pointer (REL_X/REL_Y +
+ * BTN_LEFT) capabilities confuses libinput/compositors into treating it as
+ * a mouse even while it's reporting absolute touch -- that's what caused
+ * "there's a mouse cursor but drag doesn't work" with mouse mode off.
+ * Flip it via the kernel command line (ft8203_spi.mouse_mode=1, wired up in
+ * build-xun.sh via the workflow's "Touch mode" input) or, before the driver
+ * has probed, via:
  *   echo 1 > /sys/module/ft8203_spi/parameters/mouse_mode
- *   echo 0 > /sys/module/ft8203_spi/parameters/mouse_mode
- * Also settable at boot via the kernel command line: ft8203_spi.mouse_mode=1
- * (wired up in build-xun.sh via the workflow's "Touch mode" input).
+ * Changing it after probe has already run has no effect until the next
+ * probe (reboot, or unbind/rebind the spi device).
  */
 static bool mouse_mode;
 module_param(mouse_mode, bool, 0644);
 MODULE_PARM_DESC(mouse_mode,
 		  "report touch as relative mouse movement (REL_X/REL_Y + BTN_LEFT) "
-		  "instead of absolute touchscreen coordinates");
+		  "instead of absolute touchscreen coordinates -- boot-time only, "
+		  "see comment above for why");
 
 /* CRC-16 (reflected CCITT, poly 0x8408), bit-by-bit over 8-bit SPI read
  * bytes. Used to validate boot-mode read replies against their trailing
@@ -515,7 +526,7 @@ static void ft8203_report(struct ft8203 *ts, const u8 *buf)
 	struct input_dev *input = ts->input;
 	unsigned int points = buf[1] & 0x0f;
 	bool touch = false;
-	bool mouse = READ_ONCE(mouse_mode);
+	bool mouse = ts->mouse;	/* fixed at probe time, see struct ft8203::mouse */
 	bool mouse_point_seen = false;
 	unsigned int i;
 
@@ -894,30 +905,37 @@ static int ft8203_probe(struct spi_device *spi)
 	 */
 	ft8203_try_exit_bootloader(ts);
 
+	/*
+	 * Snapshot once, here, and use ts->mouse everywhere from now on
+	 * (ft8203_report() does the same) -- see the big comment above the
+	 * mouse_mode module_param for why this isn't a live runtime switch.
+	 */
+	ts->mouse = READ_ONCE(mouse_mode);
+
 	input = devm_input_allocate_device(&spi->dev);
 	if (!input)
 		return -ENOMEM;
 	ts->input = input;
-	input->name = "Focaltech FT8203 Touchscreen";
+	input->name = ts->mouse ? "Focaltech FT8203 Touchscreen (mouse sim)"
+				 : "Focaltech FT8203 Touchscreen";
 	input->id.bustype = BUS_SPI;
 	input->dev.parent = &spi->dev;
 
-	/* Landscape after CCW map from native 1200x1920 panel space. */
-	input_set_abs_params(input, ABS_MT_POSITION_X, 0, 1919, 0, 0);
-	input_set_abs_params(input, ABS_MT_POSITION_Y, 0, 1199, 0, 0);
-	input_set_capability(input, EV_KEY, BTN_TOUCH);
+	if (ts->mouse) {
+		input_set_capability(input, EV_REL, REL_X);
+		input_set_capability(input, EV_REL, REL_Y);
+		input_set_capability(input, EV_KEY, BTN_LEFT);
+	} else {
+		/* Landscape after CCW map from native 1200x1920 panel space. */
+		input_set_abs_params(input, ABS_MT_POSITION_X, 0, 1919, 0, 0);
+		input_set_abs_params(input, ABS_MT_POSITION_Y, 0, 1199, 0, 0);
+		input_set_capability(input, EV_KEY, BTN_TOUCH);
 
-	/* Always registered regardless of the mouse_mode param's current
-	 * value, since that param is runtime-switchable (see ft8203_report).
-	 */
-	input_set_capability(input, EV_REL, REL_X);
-	input_set_capability(input, EV_REL, REL_Y);
-	input_set_capability(input, EV_KEY, BTN_LEFT);
-
-	ret = input_mt_init_slots(input, FT8203_MAX_TOUCH,
-				  INPUT_MT_DIRECT | INPUT_MT_DROP_UNUSED);
-	if (ret)
-		return ret;
+		ret = input_mt_init_slots(input, FT8203_MAX_TOUCH,
+					  INPUT_MT_DIRECT | INPUT_MT_DROP_UNUSED);
+		if (ret)
+			return ret;
+	}
 
 	ret = input_register_device(input);
 	if (ret)
