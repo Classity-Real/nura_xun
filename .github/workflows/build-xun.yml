@@ -90,6 +90,14 @@ jobs:
           name: boot-xun-img
           path: build/out/boot-xun.img
 
+      - name: Upload boot image (Namespace mirror)
+        if: success()
+        uses: namespace-actions/upload-artifact@v1
+        with:
+          name: boot-xun-img
+          path: build/out/boot-xun.img
+          compression-level: 0
+
   install-image:
     if: ${{ github.event_name != 'workflow_dispatch' || inputs.target == 'userdata' || inputs.target == 'both' }}
     runs-on: namespace-profile-workshop
@@ -167,3 +175,11 @@ jobs:
         with:
           name: xun-install-img-sparse
           path: build/out/xun-install.img.sparse
+
+      - name: Upload install image (Namespace mirror)
+        if: success()
+        uses: namespace-actions/upload-artifact@v1
+        with:
+          name: xun-install-img-sparse
+          path: build/out/xun-install.img.sparse
+          compression-level: 0
