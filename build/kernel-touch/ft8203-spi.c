@@ -277,6 +277,22 @@ static int ft8203_boot_read(struct ft8203 *ts, u8 addr, u8 *buf, u16 len)
  */
 static void ft8203_reset_pulse(struct ft8203 *ts);
 
+/* Defined further down (steady-state touch-report framing); forward-declared
+ * so ft8203_enter_boot_f3() below can use them too. See that function's
+ * comment for why: manual sysfs testing on real hardware showed this is the
+ * only framing that gets ANY live response out of this chip at all -- the
+ * raw/unwrapped bytes ft8203_enter_boot_new() sends, and the length+CRC
+ * "boot mode" header ft8203_enter_boot_old() sends via ft8203_boot_write/
+ * read, both come back as flat zeros or CRC failures every time, regardless
+ * of SPI clock mode (0-3, all tried). Writing the old path's register-0xFC
+ * AA/55 unlock through this 0xF3-wrapped framing instead, by hand via the
+ * app_write debug sysfs attribute, visibly changed the chip's run_state
+ * register (0xa3) from 0xff to 0x00 -- the only state change any protocol
+ * attempt has produced on real xun hardware so far.
+ */
+static int ft8203_read(struct ft8203 *ts, u8 reg, u8 *buf, size_t len);
+static int ft8203_write(struct ft8203 *ts, u8 reg, const u8 *buf, size_t len);
+
 /*
  * "New"-generation entry path, ported from the actual Xiaomi SM6225 vendor
  * kernel's fts_hardware_reset_to_boot() (qcom/opensource/touch-drivers/
@@ -379,10 +395,63 @@ next_attempt:
 	return -ENODEV;
 }
 
+/*
+ * Same logical unlock+poll sequence as ft8203_enter_boot_old() (register-
+ * 0xFC AA/55 unlock, then repeatedly write FT8203_REG_ROM_ENTER and poll the
+ * ROM ID), but sent through the 0xF3-wrapped ft8203_write()/ft8203_read()
+ * framing instead of the length+CRC "boot mode" header -- see the forward
+ * declaration comment above for why: that framing is the only one observed
+ * to actually move anything on this chip.
+ */
+static int ft8203_enter_boot_f3(struct ft8203 *ts)
+{
+	int attempt, poll;
+	u8 id[2] = { 0, 0 };
+	u8 unlock;
+
+	for (attempt = 0; attempt < 30; attempt++) {
+		ft8203_reset_pulse(ts);
+
+		unlock = FT8203_SOFT_RESET_AA;
+		if (ft8203_write(ts, FT8203_REG_SOFT_RESET, &unlock, 1))
+			goto next_attempt;
+		msleep(10);
+		unlock = FT8203_SOFT_RESET_55;
+		if (ft8203_write(ts, FT8203_REG_SOFT_RESET, &unlock, 1))
+			goto next_attempt;
+		msleep(80);	/* FTS_DELAY_UPGRADE_RESET from the real driver */
+
+		for (poll = 0; poll < 30; poll++) {
+			if (ft8203_write(ts, FT8203_REG_ROM_ENTER, NULL, 0))
+				goto next_attempt;
+			msleep(8);
+			if (ft8203_read(ts, FT8203_REG_ROM_ID, id, sizeof(id)))
+				goto next_attempt;
+			if (attempt == 0 && poll < 5)
+				dev_info(&ts->spi->dev,
+					 "ft8203: enter_boot_f3 attempt %d poll %d: id=%02x %02x\n",
+					 attempt, poll, id[0], id[1]);
+			if (id[0] == FT8203_ROM_ID0 && id[1] == FT8203_ROM_ID1)
+				return 0;
+			usleep_range(1000, 2000);
+		}
+next_attempt:
+		;
+	}
+	return -ENODEV;
+}
+
 static int ft8203_enter_boot(struct ft8203 *ts)
 {
-	int ret = ft8203_enter_boot_new(ts);
+	int ret = ft8203_enter_boot_f3(ts);
 
+	if (!ret)
+		return 0;
+
+	dev_info(&ts->spi->dev,
+		 "ft8203: F3-wrapped boot entry failed (%d), trying the \"new\" "
+		 "raw-byte path\n", ret);
+	ret = ft8203_enter_boot_new(ts);
 	if (!ret)
 		return 0;
 
