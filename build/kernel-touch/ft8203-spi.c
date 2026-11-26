@@ -308,18 +308,26 @@ static void ft8203_reset_pulse(struct ft8203 *ts);
 static int ft8203_enter_boot_new(struct ft8203 *ts)
 {
 	int attempt;
-	u8 id[2];
+	u8 id[2] = { 0, 0 };
 	u8 unlock_cmd[2] = { 0x55, 0xAA };
 	u8 id_cmd[4] = { FT8203_REG_ROM_ID, 0x00, 0x00, 0x00 };
 
 	ft8203_reset_pulse(ts);
 
 	for (attempt = 0; attempt < 20; attempt++) {
-		if (ft8203_raw_write(ts, unlock_cmd, sizeof(unlock_cmd)))
+		int wret, rret;
+
+		wret = ft8203_raw_write(ts, unlock_cmd, sizeof(unlock_cmd));
+		if (wret)
 			goto retry;
 		usleep_range(8000, 9000);
 
-		if (ft8203_raw_read(ts, id_cmd, sizeof(id_cmd), id, sizeof(id)))
+		rret = ft8203_raw_read(ts, id_cmd, sizeof(id_cmd), id, sizeof(id));
+		if (attempt < 3 || attempt == 19)
+			dev_info(&ts->spi->dev,
+				 "ft8203: enter_boot_new attempt %d: wret=%d rret=%d id=%02x %02x\n",
+				 attempt, wret, rret, id[0], id[1]);
+		if (rret)
 			goto retry;
 		if (id[0] == FT8203_ROM_ID0 && id[1] == FT8203_ROM_ID1)
 			return 0;
@@ -909,6 +917,56 @@ static ssize_t reset_store(struct device *dev, struct device_attribute *a,
 }
 static DEVICE_ATTR_WO(reset);
 
+/*
+ * Every protocol attempt so far (register-0xFC AA/55, raw {0x55,0xAA}+ID
+ * read) sends successfully (no SPI bus errors) but never gets the expected
+ * reply bytes back -- consistent with every bit being sampled on the wrong
+ * clock edge rather than with the command sequence itself being wrong. Our
+ * devicetree touch node sets no spi-cpha/spi-cpol, so the controller runs
+ * SPI Mode 0 by default; if FT8203 actually needs Mode 1/2/3, that alone
+ * would explain every attempt failing identically. This lets us try all
+ * four without a rebuild+flash per mode:
+ *   echo 0 > spi_mode; cat enter_boot    # Mode 0 (CPOL=0 CPHA=0) -- default
+ *   echo 1 > spi_mode; cat enter_boot    # Mode 1 (CPOL=0 CPHA=1)
+ *   echo 2 > spi_mode; cat enter_boot    # Mode 2 (CPOL=1 CPHA=0)
+ *   echo 3 > spi_mode; cat enter_boot    # Mode 3 (CPOL=1 CPHA=1)
+ * Watch dmesg after each: ft8203_enter_boot_new logs the actual id[] bytes
+ * it gets back on its first few attempts, so even a non-matching mode shows
+ * real data to compare against 82 01 instead of just a bare failure.
+ */
+static ssize_t spi_mode_show(struct device *dev, struct device_attribute *a,
+			      char *buf)
+{
+	struct ft8203 *ts = spi_get_drvdata(to_spi_device(dev));
+	unsigned int mode = ts->spi->mode & 0x3;
+
+	return sysfs_emit(buf, "%u (CPOL=%d CPHA=%d)\n", mode,
+			   !!(mode & SPI_CPOL), !!(mode & SPI_CPHA));
+}
+static ssize_t spi_mode_store(struct device *dev, struct device_attribute *a,
+			       const char *buf, size_t count)
+{
+	struct ft8203 *ts = spi_get_drvdata(to_spi_device(dev));
+	unsigned int mode;
+	int ret;
+
+	if (kstrtouint(buf, 0, &mode) || mode > 3)
+		return -EINVAL;
+
+	ts->spi->mode = (ts->spi->mode & ~0x3u) | mode;
+	ret = spi_setup(ts->spi);
+	if (ret) {
+		dev_warn(dev, "ft8203-dbg: spi_setup(mode=%u) failed (%d)\n",
+			 mode, ret);
+		return ret;
+	}
+
+	dev_info(dev, "ft8203-dbg: spi mode set to %u (CPOL=%d CPHA=%d)\n",
+		 mode, !!(mode & SPI_CPOL), !!(mode & SPI_CPHA));
+	return count;
+}
+static DEVICE_ATTR_RW(spi_mode);
+
 static ssize_t enter_boot_show(struct device *dev, struct device_attribute *a,
 				char *buf)
 {
@@ -955,6 +1013,7 @@ static struct attribute *ft8203_debug_attrs[] = {
 	&dev_attr_app_write.attr,
 	&dev_attr_app_read.attr,
 	&dev_attr_reset.attr,
+	&dev_attr_spi_mode.attr,
 	&dev_attr_enter_boot.attr,
 	&dev_attr_exit_boot.attr,
 	&dev_attr_load_firmware.attr,
