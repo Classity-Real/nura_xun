@@ -204,6 +204,31 @@ static int ft8203_boot_write(struct ft8203 *ts, u8 addr, const u8 *buf, u16 len)
 	return ret;
 }
 
+/*
+ * Raw, unwrapped SPI primitives -- no address/command-type/length/dummy
+ * header at all, unlike ft8203_boot_write/read above. The real Xiaomi
+ * vendor driver's bootloader-entry handshake (fts_hardware_reset_to_boot(),
+ * ported into ft8203_enter_boot_new() below) sends exactly the bytes given
+ * with nothing added, so it needs these instead of the wrapped versions.
+ */
+static int ft8203_raw_write(struct ft8203 *ts, const u8 *buf, size_t len)
+{
+	return spi_write(ts->spi, buf, len);
+}
+
+static int ft8203_raw_read(struct ft8203 *ts, const u8 *cmd, size_t cmd_len,
+			    u8 *resp, size_t resp_len)
+{
+	struct spi_transfer xfers[2] = {
+		{ .tx_buf = cmd, .len = cmd_len },
+		{ .rx_buf = resp, .len = resp_len },
+	};
+	struct spi_message msg;
+
+	spi_message_init_with_transfers(&msg, xfers, 2);
+	return spi_sync(ts->spi, &msg);
+}
+
 static int ft8203_boot_read(struct ft8203 *ts, u8 addr, u8 *buf, u16 len)
 {
 	u8 hdr[4 + FT8203_BOOT_DUMMY_LEN] = {
@@ -252,7 +277,67 @@ static int ft8203_boot_read(struct ft8203 *ts, u8 addr, u8 *buf, u16 len)
  */
 static void ft8203_reset_pulse(struct ft8203 *ts);
 
-static int ft8203_enter_boot(struct ft8203 *ts)
+/*
+ * "New"-generation entry path, ported from the actual Xiaomi SM6225 vendor
+ * kernel's fts_hardware_reset_to_boot() (qcom/opensource/touch-drivers/
+ * focaltech_touch/focaltech_flash.c, android_kernel_xiaomi_sm6225-modules --
+ * real shipped vendor driver source, not reverse engineered). This is the
+ * path FocalTech's generic driver picks for newer chips (upgspec_version >=
+ * UPGRADE_SPEC_V_1_0); FT8203 being one of the newer FT8xxx-generation
+ * chips, this is the more likely match, and its timing is dramatically
+ * shorter than the "old"-path register-0xFC AA/55 sequence we tried first
+ * (which is kept below as ft8203_enter_boot_old(), as a fallback):
+ *   reset, settle ~10ms
+ *   write raw {0x55, 0xAA} as ONE transaction (not two separate writes),
+ *     settle ~8-9ms
+ *   write/read ROM ID (0x90 + 3 dummy bytes -> 2 response bytes)
+ *   retry up to 20x, with a short ~1-2ms gap between tries and a full
+ *     reset again halfway through (attempt 10)
+ * The real driver only checks response byte [1] against a chip-specific
+ * constant (0xB2 for the FT3518 this tree ships); we keep checking both
+ * bytes against FT8203_ROM_ID0/1 (0x82, 0x01), sourced from the actual
+ * same-silicon Tab S7 FE Lite driver, since that pair is chip-specific to
+ * FT8203 itself rather than to this particular Xiaomi tree's chip.
+ *
+ * The key bug this fixes vs. our previous attempt: the unlock write needs
+ * a non-empty one-byte payload (0xAA) alongside the 0x55 -- "reg=0x55,
+ * buf=NULL, len=0" (what we had) puts only a single byte on the wire,
+ * while "reg=0x55, buf={0xAA}, len=1" puts the full two-byte {0x55, 0xAA}
+ * sequence the real chip expects.
+ */
+static int ft8203_enter_boot_new(struct ft8203 *ts)
+{
+	int attempt;
+	u8 id[2];
+	u8 unlock_cmd[2] = { 0x55, 0xAA };
+	u8 id_cmd[4] = { FT8203_REG_ROM_ID, 0x00, 0x00, 0x00 };
+
+	ft8203_reset_pulse(ts);
+
+	for (attempt = 0; attempt < 20; attempt++) {
+		if (ft8203_raw_write(ts, unlock_cmd, sizeof(unlock_cmd)))
+			goto retry;
+		usleep_range(8000, 9000);
+
+		if (ft8203_raw_read(ts, id_cmd, sizeof(id_cmd), id, sizeof(id)))
+			goto retry;
+		if (id[0] == FT8203_ROM_ID0 && id[1] == FT8203_ROM_ID1)
+			return 0;
+retry:
+		usleep_range(1000, 2000);
+		if (attempt == 10)
+			ft8203_reset_pulse(ts);
+	}
+	return -ENODEV;
+}
+
+/*
+ * "Old"-generation entry path: FocalTech's register-0xFC AA/55 unlock
+ * sequence (fts_fwupg_reset_to_boot() in the same vendor source), kept as a
+ * fallback in case FT8203 actually needs this path instead of the "new"
+ * one above.
+ */
+static int ft8203_enter_boot_old(struct ft8203 *ts)
 {
 	int attempt, poll;
 	u8 id[2];
@@ -261,12 +346,6 @@ static int ft8203_enter_boot(struct ft8203 *ts)
 	for (attempt = 0; attempt < 30; attempt++) {
 		ft8203_reset_pulse(ts);
 
-		/*
-		 * FocalTech's own unlock sequence: write 0xAA then 0x55 to
-		 * the soft-reset/upgrade register, each followed by a short
-		 * settle, before anything else. See the comment above
-		 * FT8203_REG_SOFT_RESET.
-		 */
 		unlock = FT8203_SOFT_RESET_AA;
 		if (ft8203_boot_write(ts, FT8203_REG_SOFT_RESET, &unlock, 1))
 			goto next_attempt;
@@ -274,7 +353,7 @@ static int ft8203_enter_boot(struct ft8203 *ts)
 		unlock = FT8203_SOFT_RESET_55;
 		if (ft8203_boot_write(ts, FT8203_REG_SOFT_RESET, &unlock, 1))
 			goto next_attempt;
-		msleep(10);
+		msleep(80);	/* FTS_DELAY_UPGRADE_RESET from the real driver */
 
 		for (poll = 0; poll < 30; poll++) {
 			if (ft8203_boot_write(ts, FT8203_REG_ROM_ENTER, NULL, 0))
@@ -290,6 +369,19 @@ next_attempt:
 		;
 	}
 	return -ENODEV;
+}
+
+static int ft8203_enter_boot(struct ft8203 *ts)
+{
+	int ret = ft8203_enter_boot_new(ts);
+
+	if (!ret)
+		return 0;
+
+	dev_info(&ts->spi->dev,
+		 "ft8203: \"new\"-path boot entry failed (%d), trying the "
+		 "\"old\"-path register-0xFC sequence\n", ret);
+	return ft8203_enter_boot_old(ts);
 }
 
 static int ft8203_write_pram(struct ft8203 *ts, const u8 *img, u32 off, u32 len)
