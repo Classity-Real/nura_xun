@@ -11,10 +11,37 @@ MIRROR=${MIRROR:-https://mirrors.tuna.tsinghua.edu.cn/alpine/latest-stable}
 HOST_UID=${HOST_UID:-1000}
 HOST_GID=${HOST_GID:-1000}
 
+# Regional mirrors like Tsinghua's occasionally serve an APKINDEX that's ahead
+# of what's actually been synced to disk yet, so a specific package 404s even
+# though apk's own index says it should be there (seen: libxml2-2.13.9-r5,
+# HTTP 404, while ~1000 other packages in the same transaction fetched fine).
+# Since libxml2 is linked by most of the GNOME stack, that one miss cascades
+# into unrelated-looking failures later in the same run (appstream's
+# post-install immediately failing to relocate libxml2 symbols, then much
+# later shared-mime-info's trigger exiting 127 because it needs libxml2/
+# xmllint too) -- one transient fetch failure, many confusing symptoms.
+# apk's package database is resumable: retrying the same `add` only has to
+# fetch whatever didn't make it in last time, not redo already-installed
+# packages, so a short retry loop rides out the sync lag instead of failing
+# the whole image build over it.
+apk_retry() {
+	attempt=1
+	max=3
+	while ! "$@"; do
+		if [ "$attempt" -ge "$max" ]; then
+			echo "apk command still failing after $max attempts: $*" >&2
+			return 1
+		fi
+		echo "apk command failed (attempt $attempt/$max), retrying in 15s: $*" >&2
+		sleep 15
+		attempt=$((attempt + 1))
+	done
+}
+
 # Use the same mirror inside the container; dl-cdn is slow or unreachable from
 # here. openssl is for the password hash, e2fsprogs builds the image.
 printf '%s\n' "$MIRROR/main" "$MIRROR/community" >/etc/apk/repositories
-apk add --no-cache openssl e2fsprogs zstd openssh-keygen >/dev/null
+apk_retry apk add --no-cache openssl e2fsprogs zstd openssh-keygen >/dev/null
 
 rm -rf "$ROOT"
 mkdir -p "$ROOT" "$WORK/apk-cache"
@@ -28,7 +55,7 @@ PKGS=$( { sed -e 's/#.*//' -e 's/[[:space:]]*$//' "$BASE/install-packages.txt"
 	sed -e 's/#.*//' -e 's/[[:space:]]*$//' "$BASE/lang-packages.txt"; } |
 	grep -v '^$' | sort -u | tr '\n' ' ')
 # shellcheck disable=SC2086
-apk --root "$ROOT" --arch aarch64 --allow-untrusted \
+apk_retry apk --root "$ROOT" --arch aarch64 --allow-untrusted \
 	--cache-dir "$WORK/apk-cache" \
 	--repository "$MIRROR/main" --repository "$MIRROR/community" \
 	add $PKGS
